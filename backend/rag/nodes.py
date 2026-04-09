@@ -4,6 +4,7 @@
 # nodes: router → retrieve → grade → generate / rewrite
 
 import os
+os.environ["OLLAMA_NUM_THREAD"] = "8"   # use all CPU cores
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from rag.agent_state import AgentState
@@ -17,12 +18,18 @@ from config import OLLAMA_BASE_URL, OLLAMA_MODEL, FAISS_STORE_PATH, DATA_PATH
 # ─────────────────────────────────────────────
 
 
-print(f"[INFO] Initializing Ollama LLM: {OLLAMA_MODEL}...")
+# NEW — faster settings
 llm = ChatOllama(
     base_url=OLLAMA_BASE_URL,
     model=OLLAMA_MODEL,
-    temperature=0.1        # low temp = more factual, less creative
+    temperature=0.1,
+    num_predict=512,        # max tokens to generate — stops rambling
+    num_ctx=2048,           # context window — smaller = faster
+    repeat_penalty=1.1,     # reduces repetition
+    top_k=20,               # reduces search space = faster
+    top_p=0.9,
 )
+
 print("[INFO] Ollama LLM ready.")
 
 print("[INFO] Initializing FAISS vector store...")
