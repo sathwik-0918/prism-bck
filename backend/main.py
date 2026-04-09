@@ -1,14 +1,23 @@
 # main.py
-# FastAPI application entry point
-# registers all routers and middleware
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from config import PORT
 from api.userApi import userRouter
-from api.chatApi import chatRouter         # ← add this
+from api.chatApi import chatRouter
+from api.historyApi import historyRouter      # new
+from api.quizApi import quizRouter            # new
+from database.mongodb import connect_db, close_db
 
-app = FastAPI(title="Prism API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # startup — like app.listen() callback in Express
+    await connect_db()
+    yield
+    # shutdown
+    await close_db()
+
+app = FastAPI(title="Prism API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,9 +26,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# register routers
 app.include_router(userRouter, prefix="/api")
-app.include_router(chatRouter, prefix="/api")   # ← add this
+app.include_router(chatRouter, prefix="/api")
+app.include_router(historyRouter, prefix="/api")
+app.include_router(quizRouter, prefix="/api")
 
 @app.get("/health")
 def health_check():
