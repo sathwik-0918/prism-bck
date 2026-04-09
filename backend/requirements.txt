@@ -1,3 +1,31 @@
+# ── Web Framework ──────────────────────────
 fastapi
 uvicorn
+
+# ── Environment ────────────────────────────
 python-dotenv
+
+# ── RAG Core ───────────────────────────────
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-groq
+langchain-ollama
+
+# ── LangGraph (Agentic RAG) ─────────────────
+langgraph
+
+# ── Vector Store ───────────────────────────
+faiss-cpu
+
+# ── Embeddings ─────────────────────────────
+sentence-transformers
+
+# ── PDF Processing ─────────────────────────
+pypdf
+pymupdf
+pdfplumber
+
+# ── Other Document Loaders ─────────────────
+docx2txt
