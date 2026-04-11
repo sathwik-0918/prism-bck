@@ -19,9 +19,12 @@ class AgentState(TypedDict):
     - retrieval_needed: True if agent decided retrieval is required
     """
     query: str
+    examTarget: str
+    userContext: str           
     rewritten_query: Optional[str]
     documents: List[str]
     answer: Optional[str]
     sources: List[str]
     generation_count: int
     retrieval_needed: bool
+    grade_passed: bool          # ← add this

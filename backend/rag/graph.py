@@ -34,23 +34,26 @@ def route_after_router(state: AgentState) -> str:
 
 def route_after_grade(state: AgentState) -> str:
     """
-    After grade_node — if docs relevant go to generate,
-    if not relevant AND under retry limit go to rewrite,
-    if retry limit exceeded go to generate anyway (best effort).
+    After grade_node decision:
+    - grade_node sets generation_count = 0 if docs relevant
+    - grade_node increments generation_count if docs NOT relevant
+    
+    We check the GRADED flag not the count directly.
     """
     generation_count = state["generation_count"]
+    original_count = state.get("grade_passed", False)
 
-    if generation_count == 0:
-        # docs were relevant
+    if state.get("grade_passed", False):
+        # docs were relevant — generate
         print("[EDGE: route_after_grade] Docs relevant → generate")
         return "generate"
     elif generation_count < 2:
-        # docs not relevant, retry allowed
+        # not relevant, retry allowed
         print(f"[EDGE: route_after_grade] Docs not relevant (attempt {generation_count}) → rewrite")
         return "rewrite"
     else:
-        # max retries reached — generate with whatever we have
-        print("[EDGE: route_after_grade] Max retries reached → generate with best effort")
+        # max retries — generate with best effort
+        print("[EDGE: route_after_grade] Max retries reached → generate best effort")
         return "generate"
 
 

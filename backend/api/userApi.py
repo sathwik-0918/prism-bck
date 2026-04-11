@@ -16,11 +16,17 @@ async def createUser(newUser: User):        # req.body → newUser
 
         # if user exists
         if userInDb is not None:
-            print(f"[API: user] User exists with role {userInDb.get('role')}, new role: {newUser.role}")
-            if newUser.role == userInDb["role"]:
-                return {"message": newUser.role, "payload": userInDb}
-            else:
-                return {"message": "Invalid Role"}
+            if "userId" not in userInDb:
+                userInDb["userId"] = str(uuid.uuid4())
+                users = readUsers()
+                for i, u in enumerate(users):
+                    if u.get("email") == userInDb["email"]:
+                        users[i] = userInDb
+                        break
+                writeUsers(users)
+            print(f"[API: user] User exists with role {userInDb['role']}, new role: {newUser.role}")
+            # return FULL existing user including saved examTarget
+            return {"message": userInDb["role"], "payload": userInDb}
         
         # new user — like new userAuthor(newUser).save()
         else:
@@ -30,7 +36,7 @@ async def createUser(newUser: User):        # req.body → newUser
             userDict["userId"] = str(uuid.uuid4())   # generate unique id
             users.append(userDict)
             writeUsers(users)
-            print(f"[API: user] User created with ID: {userDict['userId']}")
+            print(f"[API: user] New user created: {newUser.email}")
             return {"message": userDict["role"], "payload": userDict}
     except Exception as e:
         print(f"[API: user] Error: {str(e)}")

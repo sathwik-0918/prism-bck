@@ -20,25 +20,50 @@ def now():
     return datetime.utcnow().isoformat()
 
 
+# ── GENERATE SMART TITLE ───────────────────────────────────
+async def generate_smart_title(first_message: str) -> str:
+    """
+    Generates a clean 4-6 word title from first message.
+    Better than truncating raw text.
+    """
+    from rag.nodes import llm
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content="""Generate a short, clear 4-6 word chat title 
+            from this student question. No quotes, no punctuation at end.
+            Example: 'Newton Laws of Motion' or 'JEE 2023 Maths PYQs'"""),
+            HumanMessage(content=first_message[:200])
+        ])
+        title = response.content.strip().strip('"').strip("'")
+        return title[:60] if title else first_message[:50]
+    except Exception:
+        return first_message[:50]
+
+
 # ── CREATE NEW SESSION ─────────────────────────────────────
+
 class CreateSessionRequest(BaseModel):
     userId: str
     examTarget: str
     firstMessage: str               # used to auto-generate title
 
 
+
 @historyRouter.post("/sessions")
 async def createSession(req: CreateSessionRequest):
     """
     Creates a new chat session.
-    Auto-generates title from first 50 chars of first message.
+    Generates smart title from first message using LLM.
     Like creating a new article in blog app.
     """
+    import logging
     db = get_db()
-
-    # auto-generate title from first message
-    title = req.firstMessage[:50] + "..." if len(req.firstMessage) > 50 else req.firstMessage
-
+    # Log the incoming request for debugging
+    logging.warning(f"[DEBUG] Incoming createSession request: {req.dict()}")
+    # auto-generate smart title from first message
+    title = await generate_smart_title(req.firstMessage)
     session = {
         "sessionId": str(uuid.uuid4()),
         "userId": req.userId,
@@ -49,10 +74,8 @@ async def createSession(req: CreateSessionRequest):
         "updatedAt": now(),
         "isActive": True
     }
-
     await db.sessions.insert_one(session)
     session.pop("_id", None)        # remove MongoDB _id before sending
-
     print(f"[API: history] Created session '{session['sessionId']}' for user '{req.userId}'")
     return {"message": "session created", "payload": session}
 
