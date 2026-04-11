@@ -12,6 +12,7 @@ from database.mongodb import get_db
 import uuid
 from datetime import datetime
 import asyncio
+import logging
 
 chatRouter = APIRouter()
 
@@ -24,7 +25,8 @@ class ChatRequest(BaseModel):
     query: str
     userId: str
     examTarget: str
-    sessionId: str    
+    sessionId: str 
+    recentMessages: List[dict] = []   
     
     # which session this message belongs to
 
@@ -78,22 +80,24 @@ async def chat(request: ChatRequest, req: Request):
 
     try:
         # run blocking RAG pipeline in thread pool
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                run_rag_pipeline,
-                request.query,
-                request.examTarget,
-                user_context
-            ),
-            timeout=180.0      # 3 min max — complex queries need more time
-        )
-    except asyncio.TimeoutError:
-        print(f"[API: chat] Pipeline timed out for query: {request.query[:40]}")
-        return {"message": "timeout", "payload": {"answer": "I took too long thinking about that. Let me try again — could you rephrase your question more concisely?", "sources": []}}
+        result = await loop.run_in_executor(
+                    None,
+                    run_rag_pipeline,
+                    request.query,
+                    request.examTarget,
+                    user_context,
+                    request.recentMessages
+        ) 
+        
     except Exception as e:
         print(f"[API: chat] Pipeline error: {e}")
-        return {"message": "error", "payload": {"answer": "Something went wrong.", "sources": []}}
+        return {
+            "message": "error",
+            "payload": {
+                "answer": "Something went wrong processing your request. Please try again.",
+                "sources": []
+            }
+        }
 
     # check if client already disconnected (stop button pressed)
     if await req.is_disconnected():

@@ -8,6 +8,7 @@ dependencies = [
     "docx2txt>=0.9",
     "faiss-cpu>=1.13.2",
     "fastapi>=0.135.2",
+    "httpx>=0.28.1",
     "langchain>=1.2.15",
     "langchain-community>=0.4.1",
     "langchain-core>=1.2.28",

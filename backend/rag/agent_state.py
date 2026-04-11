@@ -20,7 +20,8 @@ class AgentState(TypedDict):
     """
     query: str
     examTarget: str
-    userContext: str           
+    userContext: str   
+    conversationContext: str        
     rewritten_query: Optional[str]
     documents: List[str]
     answer: Optional[str]
@@ -28,4 +29,4 @@ class AgentState(TypedDict):
     generation_count: int
     retrieval_needed: bool
     grade_passed: bool
-    blocked: bool
+    blocked: bool

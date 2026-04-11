@@ -139,15 +139,22 @@ def router_node(state: AgentState) -> AgentState:
                 "generation_count": 0, "grade_passed": False,
                 "blocked": True}
 
+    # build context-aware query for router
+    conversation = state.get("conversationContext", "")
+    context_hint = f"\n\nRecent conversation:\n{conversation}" if conversation else ""
+
+
     system_prompt = """You are a query router for a JEE/NEET exam prep AI.
 Reply with ONLY one word:
 - 'retrieve' if the question is about: physics, chemistry, maths, biology, 
   NCERT, formulas, JEE, NEET, derivations, syllabus, PYQs, study plans.
-- 'direct' for: greetings, thanks, small talk, unrelated topics."""
+- 'direct' for: greetings, thanks, small talk, unrelated topics.
+If the message is a follow-up like 'next', 'continue', 'more', 'explain further' — reply 'retrieve'."""
+
 
     response = fast_llm.invoke([        # ← fast_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=query[:500])   # cap input
+        HumanMessage(content=f"Query: {query}{context_hint}"[:600])   # cap input
     ])
 
     decision = response.content.strip().lower()[:10]
@@ -177,15 +184,26 @@ def retrieve_node(state: AgentState) -> AgentState:
     # use rewritten query (which may be condensed from preprocessing)
     query = state.get("rewritten_query") or state["query"]
     exam_target = state.get("examTarget", "")
+    conversation = state.get("conversationContext", "")
 
-    # for retrieval, use a clean short query
-    search_query = query[:200]  # cap search query length
-    if exam_target:
-        search_query = f"{exam_target} {search_query}"
+    # if follow-up query, extract topic from conversation
+    followup_words = ["next", "continue", "more", "explain", "further", "previous", "that"]
+    is_followup = any(w in query.lower() for w in followup_words) and len(query.split()) <= 5
 
-    print(f"[NODE: retrieve] Search query: '{search_query[:100]}'")
+    if is_followup and conversation:
+        # extract last student query from conversation for context
+        lines = conversation.split("\n")
+        for line in reversed(lines):
+            if line.startswith("Student:"):
+                prev_query = line.replace("Student:", "").strip()
+                query = f"{prev_query} — {query}"
+                print(f"[NODE: retrieve] Follow-up detected. Expanded query: '{query[:80]}'")
+                break
 
-    results = vector_store.query(query_text=search_query, top_k=5)
+    search_query = f"{exam_target} {query}" if exam_target else query
+    print(f"[NODE: retrieve] Search query: '{search_query[:80]}'")
+
+    results = vector_store.query(query_text=search_query, top_k=8)
 
     documents = []
     sources = []
@@ -292,12 +310,19 @@ def generate_node(state: AgentState) -> AgentState:
     documents = state["documents"]
     sources = state["sources"]
     user_context = state.get("userContext", "")
+    conversation = state.get("conversationContext", "")
 
     print(f"[NODE: generate] Generating for: '{query[:60]}'")
 
     context = "\n\n---\n\n".join(documents) if documents else "No context available."
 
     personalization = f"\n\nStudent Profile: {user_context}" if user_context else ""
+
+    # inject conversation history for follow-up awareness
+    conversation_section = ""
+    if conversation:
+        conversation_section = f"\n\nPrevious conversation (for context):\n{conversation}\n"
+
 
     system_prompt = f"""You are Prism — expert AI tutor for JEE and NEET preparation.
 Answer using ONLY the provided context. Format using markdown:
@@ -306,11 +331,24 @@ Answer using ONLY the provided context. Format using markdown:
 - $formula$ for inline math (LaTeX)
 - $$formula$$ for block equations
 - Bullet points for lists
-Never make up information. Cite the source chapter when possible.{personalization}"""
+- Tables where helpful
+
+If the student says 'next topic', 'continue', or similar — continue from where you left off in the conversation.
+Never make up information not in the context.{personalization}"""
+
+
+    user_message = f"""Question: {query}
+{conversation_section}
+Context from study materials:
+{context[:3500]}
+
+Provide a clear, well-formatted answer. If this is a follow-up, continue naturally from the previous response."""
+
+
 
     response = main_llm.invoke([        # ← main_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=f"Question: {query}\n\nContext:\n{context[:3000]}")
+        HumanMessage(content=user_message)
     ])
 
     answer = response.content.strip()
