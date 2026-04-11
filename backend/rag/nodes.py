@@ -4,7 +4,8 @@
 # nodes: router → retrieve → grade → generate / rewrite
 
 import os
-os.environ["OLLAMA_NUM_THREAD"] = "8"   # use all CPU cores
+os.environ["OLLAMA_NUM_THREAD"] = "8"
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from rag.agent_state import AgentState
@@ -12,36 +13,36 @@ from rag.vectorstore import FaissVectorStore
 from rag.data_loader import load_all_documents
 from config import OLLAMA_BASE_URL, OLLAMA_MODEL, FAISS_STORE_PATH, DATA_PATH
 
+print(f"[INFO] Initializing Ollama LLMs...")
 
-# ─────────────────────────────────────────────
-# initialize shared LLM and vector store once
-# ─────────────────────────────────────────────
-
-# main LLM — used for generation (needs larger context for complex queries)
-llm = ChatOllama(
-    base_url=OLLAMA_BASE_URL,
-    model=OLLAMA_MODEL,
-    temperature=0.1,
-    num_predict=1024,       # enough for detailed answers
-    num_ctx=4096,           # handles long queries + context + response
-    repeat_penalty=1.1,
-    top_k=20,
-    top_p=0.9,
-)
-
-# lightweight LLM — used for routing, grading, rewriting (fast, small output)
+# fast_llm — for routing, grading, rewriting
+# low token limit = instant decisions
 fast_llm = ChatOllama(
     base_url=OLLAMA_BASE_URL,
     model=OLLAMA_MODEL,
-    temperature=0.0,
-    num_predict=32,         # only needs a word or two
-    num_ctx=2048,           # enough for truncated query
-    repeat_penalty=1.1,
+    temperature=0,           # deterministic — yes/no decisions
+    num_predict=64,          # only needs short answers
+    num_ctx=1024,            # small context = fast
     top_k=10,
-    top_p=0.9,
 )
 
-print("[INFO] Ollama LLM ready.")
+# main_llm — for final answer generation only
+# higher quality, more tokens
+main_llm = ChatOllama(
+    base_url=OLLAMA_BASE_URL,
+    model=OLLAMA_MODEL,
+    temperature=0.1,
+    num_predict=1024,        # full answers
+    num_ctx=4096,            # full context
+    top_k=20,
+    top_p=0.9,
+    repeat_penalty=1.1,
+)
+
+# backward compat — keep llm for quiz/planner imports
+llm = main_llm
+
+print(f"[INFO] Ollama LLMs ready — fast_llm + main_llm")
 
 print("[INFO] Initializing FAISS vector store...")
 vector_store = FaissVectorStore(persist_dir=FAISS_STORE_PATH)
@@ -122,51 +123,44 @@ Examples:
 # subject questions, formulas, PYQs → retrieval needed
 # ─────────────────────────────────────────────
 
+# router_node — use fast_llm
 def router_node(state: AgentState) -> AgentState:
-    """
-    Agent router — decides if retrieval is needed.
-    Returns state with retrieval_needed = True or False.
-    Uses condensed query for routing decision.
-    """
     query = state["query"]
-    condensed = condense_query(query)
-    
-    # store condensed query for retrieval use
-    print(f"[NODE: router] Query received: '{condensed[:100]}'")
+    print(f"[NODE: router] Query: '{query[:60]}'")
 
-    system_prompt = """You are a query router for an educational AI assistant called Prism.
-Your job is to decide if the user's question needs document retrieval from our knowledge base.
+    # content safety check first
+    blocked_keywords = [
+        "porn", "sex", "drugs", "hack", "weapon",
+        "nude", "xxx", "kill", "bomb", "illegal"
+    ]
+    if any(kw in query.lower() for kw in blocked_keywords):
+        print(f"[NODE: router] Blocked — inappropriate content.")
+        return {**state, "retrieval_needed": False,
+                "generation_count": 0, "grade_passed": False,
+                "blocked": True}
 
+    system_prompt = """You are a query router for a JEE/NEET exam prep AI.
 Reply with ONLY one word:
-- 'retrieve' if the question is about: physics, chemistry, maths, biology concepts, formulas, 
-  NCERT topics, JEE/NEET questions, derivations, syllabus, PYQs, exam strategy, study guidance.
-- 'direct' if the question is: a greeting, small talk, thanks, asking about time, or completely unrelated to studies.
+- 'retrieve' if the question is about: physics, chemistry, maths, biology, 
+  NCERT, formulas, JEE, NEET, derivations, syllabus, PYQs, study plans.
+- 'direct' for: greetings, thanks, small talk, unrelated topics."""
 
-IMPORTANT: If the student is asking for study advice, help, or guidance about their exam performance, reply 'retrieve'."""
-
-    response = fast_llm.invoke([
+    response = fast_llm.invoke([        # ← fast_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=condensed[:500])  # only first 500 chars for routing
+        HumanMessage(content=query[:500])   # cap input
     ])
 
-    decision = response.content.strip().lower()
-    # extract just the keyword — LLM sometimes adds extra text
-    if "retrieve" in decision:
-        decision = "retrieve"
-    elif "direct" in decision:
-        decision = "direct"
-    else:
-        # default to retrieve for academic content
-        decision = "retrieve"
-    
+    decision = response.content.strip().lower()[:10]
     print(f"[NODE: router] Decision: '{decision}'")
 
     return {
         **state,
-        "retrieval_needed": decision == "retrieve",
+        "retrieval_needed": "retrieve" in decision,
         "generation_count": 0,
-        "rewritten_query": condensed if condensed != query else None,
+        "grade_passed": False,
+        "blocked": False
     }
+
 
 
 # ─────────────────────────────────────────────
@@ -223,46 +217,37 @@ def retrieve_node(state: AgentState) -> AgentState:
 # if no → go to rewrite_node
 # ─────────────────────────────────────────────
 
+# grade_node — use fast_llm
 def grade_node(state: AgentState) -> AgentState:
-    """
-    Grades retrieved documents for relevance.
-    Sets grade_passed=True if relevant, False if not.
-    Uses condensed query for grading to avoid confusing the LLM.
-    """
-    query = state.get("rewritten_query") or state["query"]
+    query = state["query"]
     documents = state["documents"]
     generation_count = state["generation_count"]
 
-    print(f"[NODE: grade] Grading {len(documents)} docs for relevance...")
+    print(f"[NODE: grade] Grading {len(documents)} docs...")
 
     if not documents:
-        print("[NODE: grade] No documents — triggering rewrite.")
-        return {**state, "grade_passed": False, "generation_count": generation_count + 1}
+        return {**state, "grade_passed": False,
+                "generation_count": generation_count + 1}
 
-    # use only first 2 docs for grading (speed)
-    context_preview = "\n\n".join(documents[:2])[:1000]
-    # use condensed query for grading
-    grade_query = query[:200]
+    context_preview = "\n\n".join(documents[:2])[:800]  # cap input
 
-    system_prompt = """You are a document relevance grader.
-Given a user query and retrieved document chunks, decide if the chunks contain useful information to answer the query.
-Reply with ONLY the word 'yes' or 'no'. Nothing else."""
+    system_prompt = """Grade if these documents are relevant to the query.
+Reply ONLY 'yes' or 'no'."""
 
-    response = fast_llm.invoke([
+    response = fast_llm.invoke([        # ← fast_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=f"Query: {grade_query}\n\nDocuments:\n{context_preview}")
+        HumanMessage(content=f"Query: {query[:200]}\n\nDocs:\n{context_preview}")
     ])
 
-    grade = response.content.strip().lower()
-    print(f"[NODE: grade] Relevance grade: '{grade[:20]}'")
+    grade = response.content.strip().lower()[:5]
+    passed = "yes" in grade
+    print(f"[NODE: grade] Grade: '{grade}' → passed={passed}")
 
-    # check if "yes" appears anywhere in response (LLM sometimes adds extra text)
-    if "yes" in grade:
-        print("[NODE: grade] Documents relevant — proceeding to generate.")
-        return {**state, "grade_passed": True, "generation_count": generation_count}
-    else:
-        print("[NODE: grade] Documents NOT relevant — triggering rewrite.")
-        return {**state, "grade_passed": False, "generation_count": generation_count + 1}
+    return {
+        **state,
+        "grade_passed": passed,
+        "generation_count": generation_count if passed else generation_count + 1
+    }
 
 
 # ─────────────────────────────────────────────
@@ -271,30 +256,21 @@ Reply with ONLY the word 'yes' or 'no'. Nothing else."""
 # triggered when graded docs are not relevant
 # ─────────────────────────────────────────────
 
+# rewrite_node — use fast_llm
 def rewrite_node(state: AgentState) -> AgentState:
-    """
-    Query rewriter node — improves the query for better retrieval.
-    Works on the condensed/rewritten query, not the raw original.
-    """
-    # rewrite from the condensed query, not the massive original
-    current_query = state.get("rewritten_query") or state["query"]
-    print(f"[NODE: rewrite] Rewriting query: '{current_query[:100]}'")
+    query = state["query"]
+    print(f"[NODE: rewrite] Rewriting: '{query[:60]}'")
 
-    system_prompt = """You are a query optimization expert for an educational RAG system.
-Rewrite the given student query to make it more specific and likely to match educational document chunks.
-Focus on: subject name, chapter, concept keywords, exam name (JEE/NEET).
-Return ONLY the rewritten query — one short sentence, nothing else."""
+    system_prompt = """Rewrite this student query to be more specific for 
+searching JEE/NEET educational documents. Return ONLY the rewritten query."""
 
-    response = fast_llm.invoke([
+    response = fast_llm.invoke([        # ← fast_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=current_query[:300])
+        HumanMessage(content=query[:300])
     ])
 
-    rewritten = response.content.strip()
-    # cap rewritten query length
-    rewritten = rewritten[:200]
-    print(f"[NODE: rewrite] Rewritten query: '{rewritten}'")
-
+    rewritten = response.content.strip()[:300]
+    print(f"[NODE: rewrite] Rewritten: '{rewritten[:60]}'")
     return {**state, "rewritten_query": rewritten}
 
 
@@ -304,66 +280,41 @@ Return ONLY the rewritten query — one short sentence, nothing else."""
 # uses the ORIGINAL query for generation (not condensed)
 # ─────────────────────────────────────────────
 
+# generate_node — use main_llm (full quality)
 def generate_node(state: AgentState) -> AgentState:
-    """
-    Generator node with personalization context injection.
-    Uses the FULL original query for generation — student needs
-    a response to their actual question, not the condensed version.
-    """
-    query = state["query"]  # always use ORIGINAL query for generation
+    # blocked content check
+    if state.get("blocked"):
+        return {**state,
+                "answer": "I'm sorry, I can only help with JEE and NEET exam preparation topics.",
+                "sources": []}
+
+    query = state["query"]
     documents = state["documents"]
     sources = state["sources"]
     user_context = state.get("userContext", "")
 
-    print(f"[NODE: generate] Generating answer for query ({len(query)} chars)")
-    print(f"[NODE: generate] Using {len(documents)} chunks | User context: {user_context[:80]}")
+    print(f"[NODE: generate] Generating for: '{query[:60]}'")
 
     context = "\n\n---\n\n".join(documents) if documents else "No context available."
 
-    # inject personalization into system prompt
-    personalization_instruction = ""
-    if user_context:
-        personalization_instruction = f"\n\nStudent Profile: {user_context}"
+    personalization = f"\n\nStudent Profile: {user_context}" if user_context else ""
 
-    system_prompt = f"""You are Prism — an expert AI tutor for JEE and NEET exam preparation.
-You help students with concepts, formulas, study guidance, quiz analysis, and exam strategy.
+    system_prompt = f"""You are Prism — expert AI tutor for JEE and NEET preparation.
+Answer using ONLY the provided context. Format using markdown:
+- **bold** for key terms
+- Numbered steps for derivations  
+- $formula$ for inline math (LaTeX)
+- $$formula$$ for block equations
+- Bullet points for lists
+Never make up information. Cite the source chapter when possible.{personalization}"""
 
-When the student shares quiz results or performance data:
-- Analyze their weak areas based on incorrect answers
-- Identify specific topics they need to revise
-- Give actionable study advice with specific chapters/concepts to focus on
-- Be encouraging but honest about gaps
-
-When answering concept questions:
-- Use the provided context from NCERT textbooks and study materials
-- Format using clean markdown with **bold**, bullet points, numbered steps
-- Use $formula$ for inline math and $$formula$$ for block equations
-- Cite which subject/chapter the answer comes from
-
-Rules:
-1. Always be helpful and student-friendly
-2. Give detailed, actionable responses
-3. If context is available, use it. If not, still try to help with general guidance.{personalization_instruction}"""
-
-    # truncate query if it's extremely long, but keep enough for context
-    display_query = query if len(query) < 2000 else query[:2000] + "\n\n[Note: message truncated for processing]"
-
-    user_message = f"""Student's message:
-{display_query}
-
-Reference materials:
-{context[:2000]}
-
-Provide a helpful, detailed response."""
-
-    response = llm.invoke([
+    response = main_llm.invoke([        # ← main_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=user_message)
+        HumanMessage(content=f"Question: {query}\n\nContext:\n{context[:3000]}")
     ])
 
     answer = response.content.strip()
-    print(f"[NODE: generate] Answer generated ({len(answer)} chars).")
-
+    print(f"[NODE: generate] Answer: {len(answer)} chars")
     return {**state, "answer": answer, "sources": sources}
 
 
@@ -373,29 +324,26 @@ Provide a helpful, detailed response."""
 # greetings, small talk, general questions
 # ─────────────────────────────────────────────
 
+# direct_generate_node — use fast_llm (fast for greetings)
 def direct_generate_node(state: AgentState) -> AgentState:
-    """
-    Direct generator — answers without retrieval.
-    For greetings, general questions, or off-topic queries.
-    """
+    # blocked content
+    if state.get("blocked"):
+        return {**state,
+                "answer": "I'm sorry, I can only help with JEE and NEET exam preparation.",
+                "sources": []}
+
     query = state["query"]
-    user_context = state.get("userContext", "")
-    print(f"[NODE: direct_generate] Answering directly (no retrieval): '{query[:80]}'")
+    print(f"[NODE: direct] Answering directly: '{query[:60]}'")
 
-    personalization = ""
-    if user_context:
-        personalization = f"\nStudent Profile: {user_context}"
+    system_prompt = """You are Prism — friendly JEE/NEET prep assistant.
+For greetings, respond warmly and briefly. Guide the student to ask academic questions.
+Keep response under 3 sentences."""
 
-    system_prompt = f"""You are Prism — a friendly AI assistant for JEE and NEET exam preparation.
-For general greetings or off-topic questions, respond warmly and guide the student back to studying.
-Keep responses short and encouraging.{personalization}"""
-
-    response = llm.invoke([
+    response = fast_llm.invoke([        # ← fast_llm for speed
         SystemMessage(content=system_prompt),
-        HumanMessage(content=query[:500])
+        HumanMessage(content=query[:200])
     ])
 
     answer = response.content.strip()
-    print(f"[NODE: direct_generate] Direct answer generated.")
-
+    print(f"[NODE: direct] Done.")
     return {**state, "answer": answer, "sources": []}
