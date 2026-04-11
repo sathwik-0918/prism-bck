@@ -4,14 +4,31 @@
 # uses Ollama LLM to create MCQ questions
 
 import re
+from typing import List
+from datetime import datetime
 from fastapi import APIRouter
 from pydantic import BaseModel
 from rag.nodes import vector_store
 from langchain_ollama import ChatOllama
 from config import OLLAMA_BASE_URL, OLLAMA_MODEL
 from langchain_core.messages import SystemMessage, HumanMessage
+from database.mongodb import get_db
 
 quizRouter = APIRouter()
+
+class QuizResultRequest(BaseModel):
+    userId: str
+    examTarget: str
+    topic: str
+    difficulty: str
+    totalQuestions: int
+    correct: int
+    wrong: int
+    skipped: int
+    scorePercent: int
+    weakAreas: List[str] = []
+
+
 
 # dedicated quiz LLM — needs more tokens than default 512
 # 5 questions with options + answers + explanations = ~1500+ tokens
@@ -26,12 +43,14 @@ quiz_llm = ChatOllama(
     top_p=0.9,
 )
 
+# QuizRequest — for GENERATING a quiz (only these fields needed)
 class QuizRequest(BaseModel):
-    topic: str                  # e.g. "Thermodynamics"
+    topic: str
     examTarget: str             # JEE or NEET
     difficulty: str = "medium"  # easy / medium / hard
     numQuestions: int = 5
-    questionType: str = "MCQ (Single correct)"  # MCQ type
+    questionType: str = "mcq"
+
 
 
 @quizRouter.post("/quiz")
@@ -287,3 +306,103 @@ def parse_quiz_json_fallback(text: str) -> list:
         pass
 
     return []
+
+@quizRouter.post("/quiz/save-result")
+async def saveQuizResult(req: QuizResultRequest):
+    """
+    Saves quiz result to MongoDB for history + analysis.
+    Called from frontend after quiz submission.
+    """
+    db = get_db()
+
+    result = {
+        "userId": req.userId,
+        "examTarget": req.examTarget,
+        "topic": req.topic,
+        "difficulty": req.difficulty,
+        "totalQuestions": req.totalQuestions,
+        "correct": req.correct,
+        "wrong": req.wrong,
+        "skipped": req.skipped,
+        "scorePercent": req.scorePercent,
+        "weakAreas": req.weakAreas,
+        "completedAt": datetime.utcnow().isoformat()
+    }
+
+    await db.quizhistory.insert_one(result)
+    result.pop("_id", None)
+
+    # update personalization with quiz weak areas
+    if req.weakAreas:
+        await db.personalization.update_one(
+            {"userId": req.userId},
+            {
+                "$addToSet": {"weakTopics": {"$each": req.weakAreas}},
+                "$set": {"lastActive": datetime.utcnow().isoformat()}
+            },
+            upsert=True
+        )
+
+    print(f"[API: quiz] Result saved — {req.scorePercent}% on {req.topic}")
+    return {"message": "result saved", "payload": result}
+
+
+@quizRouter.get("/quiz/history/{userId}")
+async def getQuizHistory(userId: str):
+    """Gets all quiz results for a user."""
+    db = get_db()
+    cursor = db.quizhistory.find(
+        {"userId": userId}, {"_id": 0}
+    ).sort("completedAt", -1)
+    history = await cursor.to_list(length=50)
+    return {"message": "quiz history", "payload": history}
+
+
+@quizRouter.get("/quiz/overall-analysis/{userId}")
+async def getOverallAnalysis(userId: str):
+    """
+    Returns aggregated analysis across all quizzes.
+    Average score, most attempted topics, improvement trend.
+    """
+    db = get_db()
+    history = await db.quizhistory.find(
+        {"userId": userId}, {"_id": 0}
+    ).to_list(length=100)
+
+    if not history:
+        return {"message": "no history", "payload": None}
+
+    total = len(history)
+    avg_score = round(sum(h["scorePercent"] for h in history) / total)
+    total_correct = sum(h["correct"] for h in history)
+    total_wrong = sum(h["wrong"] for h in history)
+    total_questions = sum(h["totalQuestions"] for h in history)
+
+    # most attempted topics
+    from collections import Counter
+    topic_counts = Counter(h["topic"] for h in history)
+    top_topics = [{"topic": t, "count": c} for t, c in topic_counts.most_common(5)]
+
+    # weak areas across all quizzes
+    all_weak = []
+    for h in history:
+        all_weak.extend(h.get("weakAreas", []))
+    weak_counts = Counter(all_weak).most_common(5)
+
+    # score trend (last 10)
+    trend = [{"topic": h["topic"], "score": h["scorePercent"],
+               "date": h["completedAt"][:10]} for h in history[-10:]]
+
+    return {
+        "message": "analysis",
+        "payload": {
+            "totalQuizzes": total,
+            "averageScore": avg_score,
+            "totalQuestionsAttempted": total_questions,
+            "totalCorrect": total_correct,
+            "totalWrong": total_wrong,
+            "topTopics": top_topics,
+            "commonWeakAreas": [w[0] for w in weak_counts],
+            "scoreTrend": trend
+        }
+    }

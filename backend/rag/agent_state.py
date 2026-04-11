@@ -27,4 +27,5 @@ class AgentState(TypedDict):
     sources: List[str]
     generation_count: int
     retrieval_needed: bool
-    grade_passed: bool          # ← add this
+    grade_passed: bool
+    blocked: bool
