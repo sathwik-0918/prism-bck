@@ -27,6 +27,8 @@ class QuizResultRequest(BaseModel):
     skipped: int
     scorePercent: int
     weakAreas: List[str] = []
+    questions: List[dict] = []      # ← full questions saved
+    userAnswers: dict = {} 
 
 
 
@@ -315,6 +317,16 @@ async def saveQuizResult(req: QuizResultRequest):
     """
     db = get_db()
 
+     # prevent duplicate saves (idempotency check)
+    recent = await db.quizhistory.find_one({
+        "userId": req.userId,
+        "completedAt": {"$gt": (datetime.utcnow().replace(second=0, microsecond=0)).isoformat()}
+    })
+    if recent and recent.get("topic") == req.topic:
+        print(f"[API: quiz] Duplicate save prevented for user '{req.userId}'")
+        recent.pop("_id", None)
+        return {"message": "already saved", "payload": recent}
+
     result = {
         "userId": req.userId,
         "examTarget": req.examTarget,
@@ -326,6 +338,8 @@ async def saveQuizResult(req: QuizResultRequest):
         "skipped": req.skipped,
         "scorePercent": req.scorePercent,
         "weakAreas": req.weakAreas,
+        "questions": req.questions,
+        "userAnswers": req.userAnswers,
         "completedAt": datetime.utcnow().isoformat()
     }
 
@@ -338,10 +352,14 @@ async def saveQuizResult(req: QuizResultRequest):
             {"userId": req.userId},
             {
                 "$addToSet": {"weakTopics": {"$each": req.weakAreas}},
+                "$inc": {"quizCount": 1},
                 "$set": {"lastActive": datetime.utcnow().isoformat()}
             },
             upsert=True
         )
+
+     # update leaderboard points
+    await update_leaderboard_points(req.userId, "quiz", req.scorePercent, db)
 
     print(f"[API: quiz] Result saved — {req.scorePercent}% on {req.topic}")
     return {"message": "result saved", "payload": result}
@@ -352,10 +370,31 @@ async def getQuizHistory(userId: str):
     """Gets all quiz results for a user."""
     db = get_db()
     cursor = db.quizhistory.find(
-        {"userId": userId}, {"_id": 0}
+        {"userId": userId}, {"questions": 0}         # exclude heavy questions from list view
     ).sort("completedAt", -1)
     history = await cursor.to_list(length=50)
+    # convert ObjectId to string for JSON
+    for h in history:
+        if "_id" in h:
+            h["_id"] = str(h["_id"])
     return {"message": "quiz history", "payload": history}
+
+@quizRouter.get("/quiz/history/{userId}/{quizId}")
+async def getQuizById(userId: str, quizId: str):
+    """Gets a specific quiz result with all questions and answers."""
+    from bson import ObjectId
+    db = get_db()
+    try:
+        quiz = await db.quizhistory.find_one(
+            {"_id": ObjectId(quizId), "userId": userId},
+            {"_id": 0}
+        )
+        if not quiz:
+            return {"message": "not found", "payload": None}
+        return {"message": "quiz", "payload": quiz}
+    except Exception as e:
+        print(f"[API: quiz] getQuizById error: {e}")
+        return {"message": "error", "payload": None}
 
 
 @quizRouter.get("/quiz/overall-analysis/{userId}")

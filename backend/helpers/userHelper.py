@@ -22,3 +22,10 @@ def findUserByEmail(email):
         if user["email"] == email:
             return user
     return None
+
+def findUserById(userId: str):
+    users = readUsers()
+    for user in users:
+        if user.get("userId") == userId:
+            return user
+    return None

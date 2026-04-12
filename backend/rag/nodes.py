@@ -19,7 +19,7 @@ print(f"[INFO] Initializing Ollama LLMs...")
 # low token limit = instant decisions
 fast_llm = ChatOllama(
     base_url=OLLAMA_BASE_URL,
-    model=OLLAMA_MODEL,
+    model="llama3.2:1b",     # ← much smaller/faster
     temperature=0,           # deterministic — yes/no decisions
     num_predict=64,          # only needs short answers
     num_ctx=1024,            # small context = fast
@@ -37,6 +37,7 @@ main_llm = ChatOllama(
     top_k=20,
     top_p=0.9,
     repeat_penalty=1.1,
+    num_thread=8,             # ← use all CPU cores
 )
 
 # backward compat — keep llm for quiz/planner imports
@@ -175,6 +176,9 @@ If the message is a follow-up like 'next', 'continue', 'more', 'explain further'
 # fetches top-k relevant chunks from FAISS
 # uses condensed/rewritten query for search, NOT raw query
 # ─────────────────────────────────────────────
+# Use llama3.2:1b for fast tasks (routing, grading)
+# Keep llama3.2 for generation
+# This is the biggest speed win possible
 
 def retrieve_node(state: AgentState) -> AgentState:
     """
@@ -187,18 +191,23 @@ def retrieve_node(state: AgentState) -> AgentState:
     conversation = state.get("conversationContext", "")
 
     # if follow-up query, extract topic from conversation
-    followup_words = ["next", "continue", "more", "explain", "further", "previous", "that"]
-    is_followup = any(w in query.lower() for w in followup_words) and len(query.split()) <= 5
+    followup_words = ["next", "continue", "more", "explain", "further", "previous", "that", "point", "above", "mentioned", "guidance", "elaborate"]
+    is_followup = any(w in query.lower() for w in followup_words)
 
     if is_followup and conversation:
-        # extract last student query from conversation for context
+        # extract last assistant response topic + last student query for context
         lines = conversation.split("\n")
+        prev_parts = []
         for line in reversed(lines):
-            if line.startswith("Student:"):
-                prev_query = line.replace("Student:", "").strip()
-                query = f"{prev_query} — {query}"
-                print(f"[NODE: retrieve] Follow-up detected. Expanded query: '{query[:80]}'")
+            if line.startswith("Prism:") and not prev_parts:
+                prev_parts.append(line.replace("Prism:", "").strip()[:150])
+            elif line.startswith("Student:") and len(prev_parts) < 2:
+                prev_parts.append(line.replace("Student:", "").strip())
                 break
+        if prev_parts:
+            context_hint = " | ".join(reversed(prev_parts))
+            query = f"{context_hint} — {query}"
+            print(f"[NODE: retrieve] Follow-up detected. Expanded query: '{query[:80]}'")
 
     search_query = f"{exam_target} {query}" if exam_target else query
     print(f"[NODE: retrieve] Search query: '{search_query[:80]}'")
@@ -277,14 +286,22 @@ Reply ONLY 'yes' or 'no'."""
 # rewrite_node — use fast_llm
 def rewrite_node(state: AgentState) -> AgentState:
     query = state["query"]
+    conversation = state.get("conversationContext", "")
     print(f"[NODE: rewrite] Rewriting: '{query[:60]}'")
 
+    # include conversation context so the rewriter understands follow-ups
+    conv_hint = ""
+    if conversation:
+        conv_hint = f"\n\nRecent conversation for context:\n{conversation[-500:]}"
+
     system_prompt = """Rewrite this student query to be more specific for 
-searching JEE/NEET educational documents. Return ONLY the rewritten query."""
+searching JEE/NEET educational documents. If it's a follow-up referencing
+previous conversation, use that context to form a complete, specific query.
+Return ONLY the rewritten query."""
 
     response = fast_llm.invoke([        # ← fast_llm
         SystemMessage(content=system_prompt),
-        HumanMessage(content=query[:300])
+        HumanMessage(content=f"{query[:300]}{conv_hint}")
     ])
 
     rewritten = response.content.strip()[:300]

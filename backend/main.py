@@ -15,6 +15,8 @@ from database.mongodb import connect_db, close_db
 from api.conceptOfDayApi import conceptRouter
 from api.tutorialsApi import tutorialsRouter
 from api.coachingApi import coachingRouter
+from api.leaderboardApi import leaderboardRouter, update_leaderboard_points
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,6 +44,8 @@ app.include_router(studyPlannerRouter, prefix="/api")
 app.include_router(conceptRouter, prefix="/api")
 app.include_router(tutorialsRouter, prefix="/api")
 app.include_router(coachingRouter, prefix="/api")
+app.include_router(leaderboardRouter, prefix="/api")
+
 
 
 @app.exception_handler(RequestValidationError)

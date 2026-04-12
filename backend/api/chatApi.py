@@ -3,7 +3,7 @@
 # saves every message to MongoDB for persistence
 # supports stop signal via AbortController from frontend
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
@@ -12,6 +12,7 @@ from database.mongodb import get_db
 import uuid
 from datetime import datetime
 import asyncio
+from api.leaderboardApi import update_leaderboard_points
 import logging
 
 chatRouter = APIRouter()
@@ -32,7 +33,7 @@ class ChatRequest(BaseModel):
 
 
 @chatRouter.post("/chat")
-async def chat(request: ChatRequest, req: Request):
+async def chat(request: ChatRequest):
     """
     Chat endpoint with disconnect detection.
     If client disconnects (stop button) — saves partial state and exits.
@@ -99,12 +100,8 @@ async def chat(request: ChatRequest, req: Request):
             }
         }
 
-    # check if client already disconnected (stop button pressed)
-    if await req.is_disconnected():
-        print(f"[API: chat] Client disconnected — skipping save.")
-        return {"message": "cancelled", "payload": {"answer": "", "sources": []}}
-
-    # save assistant response
+    # save assistant response (always save — even if client disconnects,
+    # the answer is valuable and should persist in the session)
     assistant_message = {
         "role": "assistant",
         "content": result["answer"],
@@ -124,6 +121,9 @@ async def chat(request: ChatRequest, req: Request):
     asyncio.create_task(
         analyze_chat(request.userId, request.examTarget, request.query, result["answer"])
     )
+    
+    # award chat points to leaderboard
+    await update_leaderboard_points(request.userId, "chat", 1, db)
 
     print(f"[API: chat] Response saved to session '{request.sessionId}'")
 

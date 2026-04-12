@@ -48,6 +48,7 @@ def run_rag_pipeline(
         "query": query,
         "examTarget": exam_target,
         "userContext": user_context,
+        "conversationContext": conversation_context,
         "rewritten_query": None,
         "documents": [],
         "answer": None,
@@ -55,6 +56,7 @@ def run_rag_pipeline(
         "generation_count": 0,
         "retrieval_needed": False,
         "grade_passed": False,
+        "blocked": False,
     }
 
     # run through LangGraph

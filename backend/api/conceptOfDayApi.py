@@ -4,11 +4,13 @@
 # Uses Ollama main_llm for high quality generation
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 from database.mongodb import get_db
 from rag.nodes import main_llm, vector_store
 from langchain_core.messages import SystemMessage, HumanMessage
 from datetime import datetime, date
 import json, re
+from api.leaderboardApi import update_leaderboard_points
 
 conceptRouter = APIRouter()
 
@@ -54,6 +56,39 @@ NEET_TOPICS = [
     "Coordination — Endocrine System",
 ]
 
+
+async def generate_concept_question(topic: str, exam_target: str, context: str) -> dict:
+    """
+    Generates one medium-difficulty MCQ that requires thinking,
+    not just direct recall from theory.
+    """
+    system_prompt = f"""You are an expert {exam_target} question setter.
+Generate ONE medium-difficulty MCQ on '{topic}' that requires conceptual thinking and formula application.
+The question should NOT be directly from theory — mix concepts with application.
+Return ONLY valid JSON:
+{{
+  "question": "question text here (can include simple LaTeX like $formula$)",
+  "options": {{"A": "option text", "B": "option text", "C": "option text", "D": "option text"}},
+  "answer": "A",
+  "explanation": "clear explanation with why other options are wrong too",
+  "difficulty": "medium"
+}}"""
+
+    try:
+        response = main_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Topic: {topic}\nContext: {context[:1500]}\nGenerate one challenging MCQ.")
+        ])
+        text = response.content.strip()
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except Exception as e:
+        print(f"[ConceptOfDay] Question generation error: {e}")
+
+    return None
 
 async def generate_concept(topic: str, exam_target: str) -> dict:
     """
@@ -115,6 +150,12 @@ Make it engaging, accurate, and memorable. Include real PYQ questions if availab
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             concept = json.loads(match.group())
+            
+            # also generate a practice question
+            question = await generate_concept_question(topic, exam_target, context)
+            if question:
+                concept["dailyQuestion"] = question
+                
             return concept
     except Exception as e:
         print(f"[ConceptOfDay] Generation error: {e}")
@@ -195,3 +236,68 @@ async def getConceptPreview(exam_target: str):
 
     # trigger generation in background
     return {"message": "generating", "payload": None}
+
+# New endpoints for question attempts:
+class ConceptAttemptRequest(BaseModel):
+    userId: str
+    date: str
+    examTarget: str
+    selectedAnswer: str
+    correctAnswer: str
+
+
+@conceptRouter.post("/concept-of-day/attempt")
+async def recordAttempt(req: ConceptAttemptRequest):
+    """
+    Records user's attempt at the daily concept question.
+    Each user can only attempt once per day.
+    """
+    db = get_db()
+
+    # check if already attempted
+    existing = await db.conceptquestions.find_one({
+        "userId": req.userId,
+        "date": req.date
+    })
+
+    if existing:
+        return {"message": "already_attempted", "payload": existing}
+
+    is_correct = req.selectedAnswer == req.correctAnswer
+    attempt = {
+        "userId": req.userId,
+        "date": req.date,
+        "examTarget": req.examTarget,
+        "selectedAnswer": req.selectedAnswer,
+        "correctAnswer": req.correctAnswer,
+        "correct": is_correct,
+        "attemptedAt": datetime.utcnow().isoformat()
+    }
+
+    await db.conceptquestions.insert_one(attempt)
+    attempt.pop("_id", None)
+
+    # award leaderboard points
+    points = 15 if is_correct else 5
+    await update_leaderboard_points(req.userId, "conceptQuestion", points, db)
+
+    # update personalization
+    await db.personalization.update_one(
+        {"userId": req.userId},
+        {"$inc": {"conceptsAttempted": 1, "conceptsCorrect": 1 if is_correct else 0}},
+        upsert=True
+    )
+
+    print(f"[ConceptOfDay] Attempt recorded — {'correct' if is_correct else 'wrong'}")
+    return {"message": "recorded", "payload": attempt}
+
+
+@conceptRouter.get("/concept-of-day/attempt/{userId}/{date}")
+async def getAttempt(userId: str, date: str):
+    """Check if user has already attempted today's question."""
+    db = get_db()
+    attempt = await db.conceptquestions.find_one(
+        {"userId": userId, "date": date},
+        {"_id": 0}
+    )
+    return {"message": "attempt", "payload": attempt}
