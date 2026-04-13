@@ -4,46 +4,62 @@
 # nodes: router → retrieve → grade → generate / rewrite
 
 import os
-os.environ["OLLAMA_NUM_THREAD"] = "8"
+# os.environ["OLLAMA_NUM_THREAD"] = "8"
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
+# from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 from rag.agent_state import AgentState
 from rag.vectorstore import FaissVectorStore
 from rag.data_loader import load_all_documents
-from config import OLLAMA_BASE_URL, OLLAMA_MODEL, FAISS_STORE_PATH, DATA_PATH
+# from config import OLLAMA_BASE_URL, OLLAMA_MODEL, FAISS_STORE_PATH, DATA_PATH
+from config import GROQ_API_KEY, FAISS_STORE_PATH, DATA_PATH
 
-print(f"[INFO] Initializing Ollama LLMs...")
+# print(f"[INFO] Initializing Ollama LLMs...")
+print(f"[INFO] Initializing Groq LLMs...")
 
 # fast_llm — for routing, grading, rewriting
 # low token limit = instant decisions
-fast_llm = ChatOllama(
-    base_url=OLLAMA_BASE_URL,
-    model="llama3.2:1b",     # ← much smaller/faster
-    temperature=0,           # deterministic — yes/no decisions
-    num_predict=64,          # only needs short answers
-    num_ctx=1024,            # small context = fast
-    top_k=10,
+# fast_llm = ChatOllama(
+#     base_url=OLLAMA_BASE_URL,
+#     model="llama3.2:1b",     # ← much smaller/faster
+#     temperature=0,           # deterministic — yes/no decisions
+#     num_predict=64,          # only needs short answers
+#     num_ctx=1024,            # small context = fast
+#     top_k=10,
+# )
+fast_llm = ChatGroq(
+    api_key=GROQ_API_KEY,
+    model="llama-3.1-8b-instant",
+    temperature=0,
+    max_tokens=64,
 )
 
 # main_llm — for final answer generation only
 # higher quality, more tokens
-main_llm = ChatOllama(
-    base_url=OLLAMA_BASE_URL,
-    model=OLLAMA_MODEL,
+# main_llm = ChatOllama(
+#     base_url=OLLAMA_BASE_URL,
+#     model=OLLAMA_MODEL,
+#     temperature=0.1,
+#     num_predict=1024,        # full answers
+#     num_ctx=4096,            # full context
+#     top_k=20,
+#     top_p=0.9,
+#     repeat_penalty=1.1,
+#     num_thread=8,             # ← use all CPU cores
+# )
+main_llm = ChatGroq(
+    api_key=GROQ_API_KEY,
+    model="llama-3.3-70b-versatile",
     temperature=0.1,
-    num_predict=1024,        # full answers
-    num_ctx=4096,            # full context
-    top_k=20,
-    top_p=0.9,
-    repeat_penalty=1.1,
-    num_thread=8,             # ← use all CPU cores
+    max_tokens=1024,
 )
 
 # backward compat — keep llm for quiz/planner imports
 llm = main_llm
 
-print(f"[INFO] Ollama LLMs ready — fast_llm + main_llm")
+# print(f"[INFO] Ollama LLMs ready — fast_llm + main_llm")
+print(f"[INFO] Groq LLMs ready — fast_llm + main_llm")
 
 print("[INFO] Initializing FAISS vector store...")
 vector_store = FaissVectorStore(persist_dir=FAISS_STORE_PATH)
@@ -124,46 +140,106 @@ Examples:
 # subject questions, formulas, PYQs → retrieval needed
 # ─────────────────────────────────────────────
 
-# router_node — use fast_llm
+# # router_node — use fast_llm
+# def router_node(state: AgentState) -> AgentState:
+#     query = state["query"]
+#     print(f"[NODE: router] Query: '{query[:60]}'")
+# 
+#     # content safety check first
+#     blocked_keywords = [
+#         "porn", "sex", "drugs", "hack", "weapon",
+#         "nude", "xxx", "kill", "bomb", "illegal"
+#     ]
+#     if any(kw in query.lower() for kw in blocked_keywords):
+#         print(f"[NODE: router] Blocked — inappropriate content.")
+#         return {**state, "retrieval_needed": False,
+#                 "generation_count": 0, "grade_passed": False,
+#                 "blocked": True}
+# 
+#     # build context-aware query for router
+#     conversation = state.get("conversationContext", "")
+#     context_hint = f"\n\nRecent conversation:\n{conversation}" if conversation else ""
+# 
+# 
+#     system_prompt = """You are a query router for a JEE/NEET exam prep AI.
+# Reply with ONLY one word:
+# - 'retrieve' if the question is about: physics, chemistry, maths, biology, 
+#   NCERT, formulas, JEE, NEET, derivations, syllabus, PYQs, study plans.
+# - 'direct' for: greetings, thanks, small talk, unrelated topics.
+# If the message is a follow-up like 'next', 'continue', 'more', 'explain further' — reply 'retrieve'."""
+# 
+# 
+#     response = fast_llm.invoke([        # ← fast_llm
+#         SystemMessage(content=system_prompt),
+#         HumanMessage(content=f"Query: {query}{context_hint}"[:600])   # cap input
+#     ])
+# 
+#     decision = response.content.strip().lower()[:10]
+#     print(f"[NODE: router] Decision: '{decision}'")
+# 
+#     return {
+#         **state,
+#         "retrieval_needed": "retrieve" in decision,
+#         "generation_count": 0,
+#         "grade_passed": False,
+#         "blocked": False
+#     }
+
+
+# Simple greetings and small talk — never retrieve
+DIRECT_PATTERNS = [
+    "hi", "hello", "hey", "hola", "namaste", "thanks", "thank you",
+    "ok", "okay", "bye", "good morning", "good night", "how are you",
+    "what's up", "sup", "nice", "great", "cool", "awesome"
+]
+
 def router_node(state: AgentState) -> AgentState:
-    query = state["query"]
+    query = state["query"].strip()
+    query_lower = query.lower()
+
     print(f"[NODE: router] Query: '{query[:60]}'")
 
-    # content safety check first
-    blocked_keywords = [
-        "porn", "sex", "drugs", "hack", "weapon",
-        "nude", "xxx", "kill", "bomb", "illegal"
-    ]
-    if any(kw in query.lower() for kw in blocked_keywords):
-        print(f"[NODE: router] Blocked — inappropriate content.")
+    # content safety check
+    blocked_keywords = ["porn", "sex", "drugs", "hack", "weapon", "nude", "xxx", "bomb", "illegal"]
+    if any(kw in query_lower for kw in blocked_keywords):
         return {**state, "retrieval_needed": False,
-                "generation_count": 0, "grade_passed": False,
-                "blocked": True}
+                "generation_count": 0, "grade_passed": False, "blocked": True}
 
-    # build context-aware query for router
+    # ← hardcoded direct check — no LLM call needed for obvious cases
+    is_direct = (
+        query_lower in DIRECT_PATTERNS or
+        len(query.split()) <= 2 and not any(
+            kw in query_lower for kw in
+            ["what", "how", "why", "when", "where", "which", "explain",
+             "jee", "neet", "formula", "derive", "ncert", "chapter",
+             "physics", "chemistry", "maths", "biology", "question",
+             "define", "calculate", "find", "prove"]
+        )
+    )
+
+    if is_direct:
+        print(f"[NODE: router] Direct (no LLM needed): '{query}'")
+        return {**state, "retrieval_needed": False,
+                "generation_count": 0, "grade_passed": False, "blocked": False}
+
+    # academic content — use fast_llm only for ambiguous cases
     conversation = state.get("conversationContext", "")
-    context_hint = f"\n\nRecent conversation:\n{conversation}" if conversation else ""
+    system_prompt = """Route this student query. Reply ONLY 'retrieve' or 'direct'.
+'retrieve' = academic question, formula, concept, PYQ, syllabus, follow-up on academic topic
+'direct' = greeting, thanks, general chat, unclear"""
 
-
-    system_prompt = """You are a query router for a JEE/NEET exam prep AI.
-Reply with ONLY one word:
-- 'retrieve' if the question is about: physics, chemistry, maths, biology, 
-  NCERT, formulas, JEE, NEET, derivations, syllabus, PYQs, study plans.
-- 'direct' for: greetings, thanks, small talk, unrelated topics.
-If the message is a follow-up like 'next', 'continue', 'more', 'explain further' — reply 'retrieve'."""
-
-
-    response = fast_llm.invoke([        # ← fast_llm
+    response = fast_llm.invoke([
         SystemMessage(content=system_prompt),
-        HumanMessage(content=f"Query: {query}{context_hint}"[:600])   # cap input
+        HumanMessage(content=f"Query: {query[:300]}")
     ])
 
-    decision = response.content.strip().lower()[:10]
-    print(f"[NODE: router] Decision: '{decision}'")
+    decision = response.content.strip().lower()[:15]
+    retrieve = "retrieve" in decision
+    print(f"[NODE: router] Decision: '{decision}' → retrieve={retrieve}")
 
     return {
         **state,
-        "retrieval_needed": "retrieve" in decision,
+        "retrieval_needed": retrieve,
         "generation_count": 0,
         "grade_passed": False,
         "blocked": False

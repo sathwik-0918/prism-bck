@@ -9,8 +9,10 @@ from typing import List, Optional
 from rag.nodes import llm, vector_store
 from database.mongodb import get_db
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_ollama import ChatOllama
-from config import OLLAMA_BASE_URL, OLLAMA_MODEL
+# from langchain_ollama import ChatOllama
+# from config import OLLAMA_BASE_URL, OLLAMA_MODEL
+from langchain_groq import ChatGroq
+from config import GROQ_API_KEY
 from datetime import datetime, date
 import json, re, uuid
 
@@ -18,15 +20,21 @@ studyPlannerRouter = APIRouter()
 
 # dedicated LLM for planner — needs more tokens than the shared one
 # study plans are long structured JSON, so we need higher num_predict and num_ctx
-planner_llm = ChatOllama(
-    base_url=OLLAMA_BASE_URL,
-    model=OLLAMA_MODEL,
+# planner_llm = ChatOllama(
+#     base_url=OLLAMA_BASE_URL,
+#     model=OLLAMA_MODEL,
+#     temperature=0.1,
+#     num_predict=2048,       # study plan JSON can be 1500+ tokens
+#     num_ctx=4096,           # larger context for prompt + response
+#     repeat_penalty=1.1,
+#     top_k=20,
+#     top_p=0.9,
+# )
+planner_llm = ChatGroq(
+    api_key=GROQ_API_KEY,
+    model="llama-3.3-70b-versatile",
     temperature=0.1,
-    num_predict=2048,       # study plan JSON can be 1500+ tokens
-    num_ctx=4096,           # larger context for prompt + response
-    repeat_penalty=1.1,
-    top_k=20,
-    top_p=0.9,
+    max_tokens=2048,
 )
 
 def now():

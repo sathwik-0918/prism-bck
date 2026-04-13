@@ -57,45 +57,95 @@ NEET_TOPICS = [
 ]
 
 
+def safe_json_parse(text: str) -> dict:
+    """
+    Parses LLM JSON output that may contain LaTeX backslashes.
+    Tries multiple strategies before giving up.
+    """
+    # strategy 1 — clean markdown fences
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    text = text.strip()
+
+    # strategy 2 — direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # strategy 3 — find outermost braces
+    try:
+        start = text.index('{')
+        end = text.rindex('}') + 1
+        candidate = text[start:end]
+        return json.loads(candidate)
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    # strategy 4 — escape unescaped backslashes in string values
+    # LaTeX like \omega \frac \sqrt cause JSONDecodeError
+    try:
+        # replace \letter patterns with \\letter (valid JSON escape)
+        import re as _re
+        fixed = _re.sub(
+            r'(?<!\\)\\(?!["\\/bfnrtu])',  # backslash not followed by JSON-valid escape
+            r'\\\\',
+            text[start:end] if 'start' in dir() else text
+        )
+        return json.loads(fixed)
+    except Exception:
+        pass
+
+    # strategy 5 — use ast.literal_eval on cleaned text
+    try:
+        import ast
+        # replace true/false/null with Python equivalents
+        py_text = text.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+        return ast.literal_eval(py_text)
+    except Exception:
+        pass
+
+    print(f"[ConceptOfDay] All JSON parse strategies failed.")
+    return None
+
+
 async def generate_concept_question(topic: str, exam_target: str, context: str) -> dict:
     """
-    Generates one medium-difficulty MCQ that requires thinking,
-    not just direct recall from theory.
+    Generates one MCQ — uses plain text formulas to avoid LaTeX JSON issues.
     """
-    system_prompt = f"""You are an expert {exam_target} question setter.
-Generate ONE medium-difficulty MCQ on '{topic}' that requires conceptual thinking and formula application.
-The question should NOT be directly from theory — mix concepts with application.
-Return ONLY valid JSON:
+    system_prompt = f"""You are a {exam_target} question setter.
+Generate ONE medium MCQ on '{topic}' requiring application, not just recall.
+
+CRITICAL RULES for JSON:
+- Do NOT use LaTeX backslashes (no \\omega, \\frac etc.) inside JSON strings
+- Write formulas as plain text: "omega", "v^2/r", "F = ma"
+- Return ONLY valid JSON, nothing else
+
+Format:
 {{
-  "question": "question text here (can include simple LaTeX like $formula$)",
-  "options": {{"A": "option text", "B": "option text", "C": "option text", "D": "option text"}},
+  "question": "question text with plain text formulas only",
+  "options": {{"A": "option", "B": "option", "C": "option", "D": "option"}},
   "answer": "A",
-  "explanation": "clear explanation with why other options are wrong too",
-  "difficulty": "medium"
+  "explanation": "clear explanation, no LaTeX backslashes"
 }}"""
 
     try:
         response = main_llm.invoke([
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Topic: {topic}\nContext: {context[:1500]}\nGenerate one challenging MCQ.")
+            HumanMessage(content=f"Topic: {topic}\nContext (use for accuracy): {context[:1000]}")
         ])
-        text = response.content.strip()
-        text = re.sub(r'```json\s*', '', text)
-        text = re.sub(r'```\s*', '', text)
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
+        result = safe_json_parse(response.content)
+        if result and "question" in result:
+            return result
     except Exception as e:
-        print(f"[ConceptOfDay] Question generation error: {e}")
-
+        print(f"[ConceptOfDay] Question error: {e}")
     return None
+
 
 async def generate_concept(topic: str, exam_target: str) -> dict:
     """
-    Generates a beautiful, structured concept explanation using Ollama.
-    Retrieves from vector store first for accurate content.
+    Generates concept — uses plain text to avoid JSON escape issues.
     """
-    # get context from vector store
     results = vector_store.query(
         query_text=f"{exam_target} {topic} explanation formulas examples",
         top_k=6
@@ -105,67 +155,54 @@ async def generate_concept(topic: str, exam_target: str) -> dict:
         for r in results if r["metadata"]
     ])[:3000]
 
-    system_prompt = f"""You are Prism — the best {exam_target} concept explainer in India.
-Generate a beautifully structured concept explanation that any student will love to read.
-Return ONLY valid JSON — no markdown fences, no extra text.
+    system_prompt = f"""You are Prism — best {exam_target} concept explainer.
+Generate a concept explanation. 
 
-JSON format:
+CRITICAL: Do NOT use LaTeX backslashes in JSON strings.
+Write formulas as plain text: "v = u + at", "F = ma", "E = mc^2"
+Return ONLY valid JSON, no markdown, no extra text.
+
 {{
-  "topic": "topic name",
-  "tagline": "One catchy sentence about why this topic matters",
-  "whyImportant": "2-3 sentences on exam importance and frequency",
-  "coreIdea": "The simplest possible explanation of the concept in 2-3 lines",
-  "keyPoints": ["point 1", "point 2", "point 3", "point 4", "point 5"],
+  "topic": "{topic}",
+  "tagline": "one catchy sentence",
+  "whyImportant": "2-3 sentences on exam importance",
+  "coreIdea": "simple 2-3 line explanation",
+  "keyPoints": ["point 1", "point 2", "point 3", "point 4"],
   "formulas": [
-    {{"name": "Formula name", "formula": "LaTeX formula here", "meaning": "what each symbol means"}}
+    {{"name": "Formula name", "formula": "plain text formula like F = ma", "meaning": "what it means"}}
   ],
-  "mnemonic": "A memorable trick to remember this concept",
-  "commonMistakes": ["mistake 1", "mistake 2", "mistake 3"],
+  "mnemonic": "memory trick",
+  "commonMistakes": ["mistake 1", "mistake 2"],
   "pyqs": [
-    {{"year": "2023", "question": "question text", "answer": "answer with brief explanation"}}
+    {{"year": "2023", "question": "question text", "answer": "answer and brief explanation"}}
   ],
-  "difficulty": "easy|medium|hard",
-  "estimatedMarks": "marks this topic typically carries"
+  "difficulty": "medium",
+  "estimatedMarks": "4-8 marks"
 }}"""
-
-    user_msg = f"""Create a concept of the day for: {topic}
-Exam: {exam_target}
-
-Context from study materials:
-{context}
-
-Make it engaging, accurate, and memorable. Include real PYQ questions if available in context."""
 
     try:
         response = main_llm.invoke([
             SystemMessage(content=system_prompt),
-            HumanMessage(content=user_msg)
+            HumanMessage(content=f"Create concept for: {topic}\nContext:\n{context[:2000]}")
         ])
 
-        text = response.content.strip()
-        # clean up any markdown fences
-        text = re.sub(r'```json\s*', '', text)
-        text = re.sub(r'```\s*', '', text)
-        # find JSON
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            concept = json.loads(match.group())
-            
-            # also generate a practice question
+        result = safe_json_parse(response.content)
+        if result:
+            # generate question separately
             question = await generate_concept_question(topic, exam_target, context)
             if question:
-                concept["dailyQuestion"] = question
-                
-            return concept
+                result["dailyQuestion"] = question
+            return result
     except Exception as e:
-        print(f"[ConceptOfDay] Generation error: {e}")
+        print(f"[ConceptOfDay] Concept error: {e}")
 
-    # fallback
+    # fallback — minimal valid concept
     return {
         "topic": topic,
         "tagline": f"Master {topic} for {exam_target}",
-        "coreIdea": "Loading concept details...",
-        "keyPoints": [],
+        "whyImportant": f"{topic} is an important topic in {exam_target}.",
+        "coreIdea": "Loading details...",
+        "keyPoints": [f"Study {topic} thoroughly"],
         "formulas": [],
         "mnemonic": "",
         "commonMistakes": [],

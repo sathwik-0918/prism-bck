@@ -9,10 +9,13 @@ from datetime import datetime
 from fastapi import APIRouter
 from pydantic import BaseModel
 from rag.nodes import vector_store
-from langchain_ollama import ChatOllama
-from config import OLLAMA_BASE_URL, OLLAMA_MODEL
+# from langchain_ollama import ChatOllama
+# from config import OLLAMA_BASE_URL, OLLAMA_MODEL
+from langchain_groq import ChatGroq
+from config import GROQ_API_KEY
 from langchain_core.messages import SystemMessage, HumanMessage
 from database.mongodb import get_db
+from api.leaderboardApi import update_leaderboard_points
 
 quizRouter = APIRouter()
 
@@ -34,15 +37,21 @@ class QuizResultRequest(BaseModel):
 
 # dedicated quiz LLM — needs more tokens than default 512
 # 5 questions with options + answers + explanations = ~1500+ tokens
-quiz_llm = ChatOllama(
-    base_url=OLLAMA_BASE_URL,
-    model=OLLAMA_MODEL,
+# quiz_llm = ChatOllama(
+#     base_url=OLLAMA_BASE_URL,
+#     model=OLLAMA_MODEL,
+#     temperature=0.3,
+#     num_predict=2048,       # enough for 5+ questions
+#     num_ctx=4096,           # larger context for chunked content + response
+#     repeat_penalty=1.1,
+#     top_k=20,
+#     top_p=0.9,
+# )
+quiz_llm = ChatGroq(
+    api_key=GROQ_API_KEY,
+    model="llama-3.3-70b-versatile",
     temperature=0.3,
-    num_predict=2048,       # enough for 5+ questions
-    num_ctx=4096,           # larger context for chunked content + response
-    repeat_penalty=1.1,
-    top_k=20,
-    top_p=0.9,
+    max_tokens=2048,
 )
 
 # QuizRequest — for GENERATING a quiz (only these fields needed)
@@ -382,15 +391,16 @@ async def getQuizHistory(userId: str):
 @quizRouter.get("/quiz/history/{userId}/{quizId}")
 async def getQuizById(userId: str, quizId: str):
     """Gets a specific quiz result with all questions and answers."""
-    from bson import ObjectId
+    
     db = get_db()
     try:
+        from bson import ObjectId
         quiz = await db.quizhistory.find_one(
-            {"_id": ObjectId(quizId), "userId": userId},
-            {"_id": 0}
+            {"_id": ObjectId(quizId), "userId": userId}
         )
         if not quiz:
             return {"message": "not found", "payload": None}
+        quiz["_id"] = str(quiz["_id"])
         return {"message": "quiz", "payload": quiz}
     except Exception as e:
         print(f"[API: quiz] getQuizById error: {e}")
