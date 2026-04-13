@@ -2,6 +2,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import socketio
+
 from config import PORT
 from api.userApi import userRouter
 from api.chatApi import chatRouter
@@ -11,11 +13,15 @@ from api.personalizationApi import personalizationRouter
 from api.studyPlannerApi import studyPlannerRouter
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from database.mongodb import connect_db, close_db
 from api.conceptOfDayApi import conceptRouter
 from api.tutorialsApi import tutorialsRouter
 from api.coachingApi import coachingRouter
 from api.leaderboardApi import leaderboardRouter, update_leaderboard_points
+from api.studyChatRestApi import studyChatRouter
+from api.studyChatApi import sio
+
+from database.mongodb import connect_db, close_db
+
 
 
 @asynccontextmanager
@@ -35,16 +41,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(userRouter, prefix="/api")
-app.include_router(chatRouter, prefix="/api")
-app.include_router(historyRouter, prefix="/api")
-app.include_router(quizRouter, prefix="/api")
-app.include_router(personalizationRouter, prefix="/api")
-app.include_router(studyPlannerRouter, prefix="/api")
-app.include_router(conceptRouter, prefix="/api")
-app.include_router(tutorialsRouter, prefix="/api")
-app.include_router(coachingRouter, prefix="/api")
-app.include_router(leaderboardRouter, prefix="/api")
+# Register all HTTP routers
+for router in [userRouter, chatRouter, historyRouter, quizRouter,
+               personalizationRouter, studyPlannerRouter, conceptRouter,
+               leaderboardRouter, coachingRouter, tutorialsRouter, studyChatRouter]:
+    app.include_router(router, prefix="/api")
 
 
 
@@ -60,3 +61,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "Prism Backend"}
+
+# ── WRAP WITH SOCKET.IO ──────────────────────────────────────────────────
+# This is the key — wrap FastAPI app with Socket.IO ASGI middleware
+# Socket.IO handles /socket.io/* routes, FastAPI handles everything else
+app = socketio.ASGIApp(
+    socketio_server=sio,
+    other_asgi_app=app,
+    socketio_path="socket.io"
+)

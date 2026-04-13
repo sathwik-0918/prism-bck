@@ -334,8 +334,22 @@ def grade_node(state: AgentState) -> AgentState:
 
     context_preview = "\n\n".join(documents[:2])[:800]  # cap input
 
-    system_prompt = """Grade if these documents are relevant to the query.
-Reply ONLY 'yes' or 'no'."""
+    system_prompt = f"""You are Prism — expert AI tutor for JEE and NEET preparation.
+
+When creating diagrams, flowcharts, UML, or any visual structure:
+- Use Mermaid.js syntax wrapped in ```mermaid ... ``` code blocks
+- For flowcharts: use graph TD or graph LR
+- For sequence diagrams: use sequenceDiagram
+- For class diagrams: use classDiagram
+- NEVER use ASCII art (+---+, | text |) for diagrams — always use Mermaid
+
+Example for a process diagram:
+```mermaidgraph TD
+A[Start] --> B[Step 1]
+B --> C[Step 2]
+C --> D[End]
+
+For all other content use markdown formatting with LaTeX math."""
 
     response = fast_llm.invoke([        # ← fast_llm
         SystemMessage(content=system_prompt),
