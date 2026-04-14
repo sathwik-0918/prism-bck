@@ -14,7 +14,7 @@ studyChatRouter = APIRouter()
 
 
 def now():
-    return datetime.utcnow().isoformat()
+    return datetime.utcnow().isoformat() + "Z"
 
 
 # ── USER PROFILE ──────────────────────────────────────────────────────────

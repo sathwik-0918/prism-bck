@@ -14,6 +14,9 @@ from api.leaderboardApi import update_leaderboard_points
 
 conceptRouter = APIRouter()
 
+def now():
+    return datetime.utcnow().isoformat() + "Z"
+
 # curated high-value topics that rotate
 JEE_TOPICS = [
     "Newton's Laws of Motion",
@@ -244,7 +247,7 @@ async def getConceptOfDay(exam_target: str):
     concept = await generate_concept(topic, exam_target)
     concept["date"] = today
     concept["examTarget"] = exam_target
-    concept["generatedAt"] = datetime.utcnow().isoformat()
+    concept["generatedAt"] = now()
 
     # save to MongoDB
     await db.conceptofday.insert_one(concept)

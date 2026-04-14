@@ -17,7 +17,7 @@ historyRouter = APIRouter()
 
 def now():
     """Returns current UTC timestamp as string."""
-    return datetime.utcnow().isoformat()
+    return datetime.utcnow().isoformat() + "Z"
 
 
 # ── GENERATE SMART TITLE ───────────────────────────────────

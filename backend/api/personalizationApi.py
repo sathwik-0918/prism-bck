@@ -14,7 +14,7 @@ from datetime import datetime
 personalizationRouter = APIRouter()
 
 def now():
-    return datetime.utcnow().isoformat()
+    return datetime.utcnow().isoformat() + "Z"
 
 
 # ── GET USER PROFILE ──────────────────────────────────────
