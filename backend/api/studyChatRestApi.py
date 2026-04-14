@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
-from database.mongodb import get_db
+from database.mongodb import get_chat_db as get_db
 from datetime import datetime
 import uuid
 
