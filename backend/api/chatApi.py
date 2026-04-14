@@ -19,7 +19,7 @@ chatRouter = APIRouter()
 
 
 def now():
-    return datetime.utcnow().isoformat()
+    return datetime.utcnow().isoformat() + "Z"
 
 
 class ChatRequest(BaseModel):

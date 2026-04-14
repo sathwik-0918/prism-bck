@@ -38,7 +38,7 @@ planner_llm = ChatGroq(
 )
 
 def now():
-    return datetime.utcnow().isoformat()
+    return datetime.utcnow().isoformat() + "Z"
 
 
 class StudyPlanRequest(BaseModel):

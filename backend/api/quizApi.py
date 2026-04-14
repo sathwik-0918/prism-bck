@@ -19,6 +19,9 @@ from api.leaderboardApi import update_leaderboard_points
 
 quizRouter = APIRouter()
 
+def now():
+    return datetime.utcnow().isoformat() + "Z"
+
 class QuizResultRequest(BaseModel):
     userId: str
     examTarget: str
@@ -350,7 +353,7 @@ async def saveQuizResult(req: QuizResultRequest):
         "weakAreas": req.weakAreas,
         "questions": req.questions,
         "userAnswers": req.userAnswers,
-        "completedAt": datetime.utcnow().isoformat()
+        "completedAt": now()
     }
 
     await db.quizhistory.insert_one(result)

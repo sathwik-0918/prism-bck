@@ -19,6 +19,9 @@ from api.coachingApi import coachingRouter
 from api.leaderboardApi import leaderboardRouter, update_leaderboard_points
 from api.studyChatRestApi import studyChatRouter
 from api.studyChatApi import sio
+# main.py — after sio is created, before ASGIApp wrapping
+from api.battleApi import battleRouter, register_battle_events
+from api.ncertApi import ncertRouter
 
 from database.mongodb import connect_db, close_db
 
@@ -44,7 +47,7 @@ app.add_middleware(
 # Register all HTTP routers
 for router in [userRouter, chatRouter, historyRouter, quizRouter,
                personalizationRouter, studyPlannerRouter, conceptRouter,
-               leaderboardRouter, coachingRouter, tutorialsRouter, studyChatRouter]:
+               leaderboardRouter, coachingRouter, tutorialsRouter, studyChatRouter, ncertRouter, battleRouter]:
     app.include_router(router, prefix="/api")
 
 
@@ -65,6 +68,10 @@ def health_check():
 # ── WRAP WITH SOCKET.IO ──────────────────────────────────────────────────
 # This is the key — wrap FastAPI app with Socket.IO ASGI middleware
 # Socket.IO handles /socket.io/* routes, FastAPI handles everything else
+
+# register battle socket events on same sio instance
+register_battle_events(sio)
+
 app = socketio.ASGIApp(
     socketio_server=sio,
     other_asgi_app=app,
