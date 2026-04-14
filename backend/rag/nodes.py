@@ -492,3 +492,51 @@ Keep response under 3 sentences."""
     answer = response.content.strip()
     print(f"[NODE: direct] Done.")
     return {**state, "answer": answer, "sources": []}
+
+
+# rag/nodes.py — update deep_clean_text in embedding.py
+# The key change: don't strip math symbols, only strip true garbage
+
+def deep_clean_text(text: str) -> str:
+    """
+    Cleans text while PRESERVING all mathematical symbols.
+    Only removes: surrogates, null bytes, true control chars.
+    Keeps: Greek letters, math operators, subscripts, superscripts.
+    """
+    if not text:
+        return ""
+
+    # Step 1 — remove ONLY surrogate characters (not other Unicode)
+    # Surrogates are \uD800-\uDFFF — these are the real crash cause
+    # Greek letters α β γ, math ∫ ∑ √ are NOT surrogates — keep them
+    cleaned = []
+    i = 0
+    while i < len(text):
+        char = text[i]
+        code = ord(char)
+        # skip surrogates only
+        if 0xD800 <= code <= 0xDFFF:
+            i += 1
+            continue
+        cleaned.append(char)
+        i += 1
+    text = ''.join(cleaned)
+
+    # Step 2 — remove NULL bytes and true control chars
+    # Keep: \n (newline), \t (tab), standard Unicode
+    # Remove: \x00-\x08, \x0b, \x0c, \x0e-\x1f, \x7f
+    import re
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+    # Step 3 — normalize whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[ \t]{3,}', '  ', text)
+    text = text.strip()
+
+    # Step 4 — final safety check
+    try:
+        text.encode('utf-8')
+    except UnicodeEncodeError:
+        text = text.encode('utf-8', errors='ignore').decode('utf-8')
+
+    return text

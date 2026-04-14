@@ -40,6 +40,32 @@ async def chat(request: ChatRequest):
     """
     import logging
     db = get_db()
+
+
+    # normalize query — preserve symbols, remove only true garbage
+    import unicodedata
+    query = request.query
+
+    # normalize unicode (NFC — standard form, preserves all symbols)
+    try:
+        query = unicodedata.normalize('NFC', query)
+    except Exception:
+        pass
+
+    # remove surrogates only
+    cleaned_chars = []
+    for char in query:
+        code = ord(char)
+        if not (0xD800 <= code <= 0xDFFF):
+            cleaned_chars.append(char)
+    query = ''.join(cleaned_chars)
+
+    print(f"[API: chat] Query from '{request.userId}': '{query[:80]}'")
+    print(f"[API: chat] Session: {request.sessionId} | Exam: {request.examTarget}")
+
+    # rest of function uses cleaned query
+    # ... (keep existing code, replace request.query with query)
+
     # Log the incoming request for debugging
     logging.warning(f"[DEBUG] Incoming chat request: {request.dict()}")
     # fetch personalization context

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import uuid
 import base64
+from database.mongodb import get_chat_db as get_db
 
 # ── Socket.IO server ─────────────────────────────────────────────────────
 # async_mode='asgi' integrates perfectly with FastAPI/uvicorn
@@ -70,7 +71,7 @@ async def connect(sid, environ, auth):
     await sio.enter_room(sid, f"user_{user_id}")
 
     # load and join all group rooms this user belongs to
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
     groups = await db.studychat_groups.find(
         {"members.userId": user_id},
@@ -93,7 +94,7 @@ async def connect(sid, environ, auth):
 
 
 @sio.event
-async def disconnect(sid):
+async def disconnect(sid,reason=None):
     """Client disconnected. Update presence."""
     user_id = socket_to_user.pop(sid, None)
     if not user_id:
@@ -107,7 +108,7 @@ async def disconnect(sid):
         await broadcast_presence(sio, user_id, "offline")
 
         # update DB
-        from database.mongodb import get_db
+        # from database.mongodb import get_db
         db = get_db()
         await db.studychat_users.update_one(
             {"userId": user_id},
@@ -136,8 +137,11 @@ async def send_dm(sid, data):
     if not to_user:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
+
+    print("🔥 USING DB:", db.name)
+    print("🔥 CLIENT:", db.client)
 
     # build conversation ID (sorted so A↔B == B↔A)
     convo_id = "_".join(sorted([from_user, to_user]))
@@ -218,7 +222,7 @@ async def mark_read_dm(sid, data):
     if not user_id or not other_user:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
 
     convo_id = "_".join(sorted([user_id, other_user]))
@@ -253,7 +257,7 @@ async def react_to_message(sid, data):
     if not user_id:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
 
     message_id = data.get("messageId")
@@ -303,7 +307,7 @@ async def edit_message(sid, data):
     if not user_id or not message_id:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
 
     msg = await db.studychat_messages.find_one({"messageId": message_id})
@@ -335,7 +339,7 @@ async def delete_message(sid, data):
     if not user_id or not message_id:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
 
     msg = await db.studychat_messages.find_one({"messageId": message_id})
@@ -373,7 +377,7 @@ async def send_group_message(sid, data):
     if not user_id or not group_id:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
 
     # verify membership
@@ -450,7 +454,7 @@ async def pin_message(sid, data):
     if not user_id or not group_id or not message_id:
         return
 
-    from database.mongodb import get_db
+    # from database.mongodb import get_db
     db = get_db()
 
     # check if admin
