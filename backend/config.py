@@ -4,6 +4,8 @@ import os
 
 load_dotenv()
 
+MONGODB_ATLAS_URI = os.getenv("MONGODB_ATLAS_URI", "")
+MONGODB_ATLAS_DB = os.getenv("MONGODB_ATLAS_DB", "prism_cloud")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "prism")
 

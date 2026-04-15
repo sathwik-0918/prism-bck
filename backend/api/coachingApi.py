@@ -51,6 +51,12 @@ NTA_EXAM_CENTERS = {
     ]
 }
 
+HYDERABAD_REGION_HINTS = [
+    "hyderabad", "secunderabad", "miyapur", "ghatkesar", "medchal",
+    "malkajgiri", "rangareddy", "ranga reddy", "ameerpet", "kukatpally",
+    "uppal", "lb nagar", "dilsukhnagar", "telangana"
+]
+
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -79,16 +85,29 @@ async def overpass_search(lat: float, lon: float, radius: int, client: httpx.Asy
 );
 out center body 100;
 """
-    try:
-        res = await client.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-            timeout=30.0
-        )
-        return res.json().get("elements", [])
-    except Exception as e:
-        print(f"[Coaching] Overpass error at radius {radius}: {e}")
-        return []
+    endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://lz4.overpass-api.de/api/interpreter",
+    ]
+
+    for endpoint in endpoints:
+        try:
+            res = await client.post(
+                endpoint,
+                content=query,
+                headers={
+                    "Content-Type": "text/plain; charset=utf-8",
+                    "User-Agent": "Prism-ExamApp/1.0"
+                },
+                timeout=35.0
+            )
+            res.raise_for_status()
+            return res.json().get("elements", [])
+        except Exception as e:
+            print(f"[Coaching] Overpass error at radius {radius} via {endpoint}: {e}")
+
+    return []
 
 
 def process_elements(elements: list, user_lat: float, user_lon: float) -> list:
@@ -211,6 +230,13 @@ def get_nta_centers(city_name: str, user_lat: float, user_lon: float) -> list:
     return nta
 
 
+def resolve_curated_region(location: str, city: str, state: str) -> str:
+    haystack = " ".join([location, city, state]).lower()
+    if any(hint in haystack for hint in HYDERABAD_REGION_HINTS):
+        return "hyderabad"
+    return city
+
+
 @coachingRouter.get("/coaching/search")
 async def searchCoaching(location: str):
     """
@@ -241,18 +267,52 @@ async def searchCoaching(location: str):
             lat = float(geo_data[0]["lat"])
             lon = float(geo_data[0]["lon"])
             display = geo_data[0].get("display_name", location)
-            city = display.split(",")[0]
-            state = display.split(",")[2].strip() if len(display.split(",")) > 2 else ""
+            address = geo_data[0].get("address", {})
+            city = (
+                address.get("city") or
+                address.get("town") or
+                address.get("suburb") or
+                address.get("county") or
+                display.split(",")[0]
+            )
+            state = (
+                address.get("state_district") or
+                address.get("state") or
+                (display.split(",")[2].strip() if len(display.split(",")) > 2 else "")
+            )
 
             print(f"[Coaching] Searching near: {city}, {state} ({lat:.4f}, {lon:.4f})")
 
+            curated_region = resolve_curated_region(location, city, state)
+            curated = get_curated_centers(curated_region, lat, lon)
+            nta_centers = get_nta_centers(curated_region, lat, lon)
+
+            if len(curated) >= 5:
+                for c in curated:
+                    c["googleMapsUrl"] = f"https://www.google.com/maps/search/{c['name'].replace(' ', '+')}+{curated_region.replace(' ', '+')}"
+                    c["directionsUrl"] = f"https://www.google.com/maps/dir/{lat},{lon}/{c['lat']},{c['lon']}"
+                print(f"[Coaching] Using curated fallback for {curated_region}: {len(curated)} centers")
+                return {
+                    "message": "centers",
+                    "payload": curated[:30],
+                    "ntaCenters": nta_centers,
+                    "coords": {"lat": lat, "lon": lon, "city": city},
+                    "searchMeta": {
+                        "searchedRadiiKm": [],
+                        "finalSearchAreaKm": 0,
+                        "mode": "curated_fallback"
+                    }
+                }
+
             # progressive search with expanding radius
             all_centers = []
-            radii = [25000, 75000, 150000]  # 25km, 75km, 150km
+            searched_radii = []
+            radii = [25000, 50000, 75000, 100000, 125000, 150000]
 
             for radius in radii:
                 elements = await overpass_search(lat, lon, radius, client)
                 centers = process_elements(elements, lat, lon)
+                searched_radii.append(radius // 1000)
 
                 # deduplicate
                 existing_names = {c["name"] for c in all_centers}
@@ -267,6 +327,10 @@ async def searchCoaching(location: str):
             # supplement with curated data if still < 10
             if len(all_centers) < 10:
                 curated = get_curated_centers(city, lat, lon)
+                if not curated and state:
+                    curated = get_curated_centers(state, lat, lon)
+                if not curated and "telangana" in state.lower():
+                    curated = get_curated_centers("hyderabad", lat, lon)
                 existing_names = {c["name"] for c in all_centers}
                 curated_new = [c for c in curated if c["name"] not in existing_names]
                 all_centers.extend(curated_new)
@@ -293,7 +357,7 @@ async def searchCoaching(location: str):
                     all_centers.extend(fb_new[:max(0, 10 - len(all_centers))])
 
             # NTA exam centers (shown separately)
-            nta_centers = get_nta_centers(city, lat, lon)
+            nta_centers = nta_centers or get_nta_centers(city, lat, lon)
             # also check state capital
             if not nta_centers and state:
                 nta_centers = get_nta_centers(state.lower(), lat, lon)
@@ -310,7 +374,11 @@ async def searchCoaching(location: str):
                 "message": "centers",
                 "payload": all_centers[:30],
                 "ntaCenters": nta_centers,
-                "coords": {"lat": lat, "lon": lon, "city": city}
+                "coords": {"lat": lat, "lon": lon, "city": city},
+                "searchMeta": {
+                    "searchedRadiiKm": searched_radii,
+                    "finalSearchAreaKm": searched_radii[-1] if searched_radii else 25
+                }
             }
 
     except Exception as e:
