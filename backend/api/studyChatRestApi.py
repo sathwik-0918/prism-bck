@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
 from database.mongodb import get_chat_db as get_db
+from database.mongodb import get_cloud_db
 from datetime import datetime
 import uuid
 
@@ -440,26 +441,13 @@ async def serveFile(fileId: str):
 
 @studyChatRouter.get("/studychat/search/users")
 async def searchUsers(q: str, currentUserId: str = ""):
-    """Search users by name for friend requests."""
-    from helpers.userHelper import readUsers
-    all_users = readUsers()
-    q_lower = q.lower()
-    
-    results = []
-    for u in all_users:
-        user_id = u.get("userId")
-        if not user_id or user_id == currentUserId:
-            continue
-            
-        full_name = f"{u.get('firstName', '')} {u.get('lastName', '')}".strip()
-        if q_lower in full_name.lower():
-            results.append({
-                "userId": user_id,
-                "displayName": full_name,
-                "avatar": u.get("profileImageUrl", ""),
-                "studyGoal": u.get("examTarget", "")
-            })
-            if len(results) >= 20:
-                break
-
-    return {"message": "users", "payload": results}
+    """Search users from CLOUD DB — finds users from all devices."""
+    db_cloud = get_cloud_db()
+    users = await db_cloud.studychat_users.find(
+        {
+            "displayName": {"$regex": q, "$options": "i"},
+            "userId": {"$ne": currentUserId}
+        },
+        {"_id": 0, "data": 0}
+    ).limit(20).to_list(20)
+    return {"message": "users", "payload": users}

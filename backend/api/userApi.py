@@ -4,6 +4,7 @@ from helpers.userHelper import readUsers, writeUsers, findUserByEmail
 import uuid
 from database.mongodb import get_db
 from api.leaderboardApi import update_leaderboard_points
+import httpx
 
 userRouter = APIRouter()            # like exp.Router()
 
@@ -40,6 +41,20 @@ async def createUser(newUser: User):        # req.body → newUser
             # ensure user is in leaderboard (points=0 acts as an upsert)
             db = get_db()
             await update_leaderboard_points(userInDb["userId"], "login", 0, db)
+
+            # sync to cloud leaderboard on every login
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"http://localhost:8000/api/leaderboard/add-user/{userInDb['userId']}",
+                        params={
+                            "firstName": userInDb.get("firstName", ""),
+                            "profileImageUrl": userInDb.get("profileImageUrl", ""),
+                            "examTarget": userInDb.get("examTarget", "")
+                        }
+                    )
+            except Exception:
+                pass  # non-blocking
             
             # return FULL existing user including saved examTarget
             return {"message": userInDb["role"], "payload": userInDb}
@@ -57,6 +72,20 @@ async def createUser(newUser: User):        # req.body → newUser
             # add new user to leaderboard
             db = get_db()
             await update_leaderboard_points(userDict["userId"], "login", 0, db)
+
+            # add to cloud leaderboard
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"http://localhost:8000/api/leaderboard/add-user/{userDict['userId']}",
+                        params={
+                            "firstName": userDict.get("firstName", ""),
+                            "profileImageUrl": userDict.get("profileImageUrl", ""),
+                            "examTarget": userDict.get("examTarget", "")
+                        }
+                    )
+            except Exception:
+                pass
             
             return {"message": userDict["role"], "payload": userDict}
     except Exception as e:

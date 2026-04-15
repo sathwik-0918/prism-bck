@@ -11,7 +11,7 @@ from rag.nodes import main_llm, vector_store
 from langchain_core.messages import SystemMessage, HumanMessage
 from datetime import datetime, timedelta
 import uuid, json, re, asyncio
-from api.quizApi import quiz_llm, parse_quiz_response, parse_quiz_flexible
+from api.quizApi import quiz_llm, parse_quiz_response, parse_quiz_flexible, generate_pyq_questions
 
 battleRouter = APIRouter()
 
@@ -58,6 +58,8 @@ def register_battle_events(sio):
             "difficulty": data.get("difficulty", "medium"),
             "questionCount": min(int(data.get("questionCount", 10)), 20),
             "examTarget": data.get("examTarget", "JEE"),
+            "isPYQMode": bool(data.get("isPYQMode", False)),
+            "pyqExamType": data.get("pyqExamType", "JEE Mains"),
             "isPrivate": data.get("isPrivate", False),
             "status": "waiting",    # waiting | generating | countdown | active | finished
             "members": [{
@@ -93,6 +95,8 @@ def register_battle_events(sio):
                 "roomName": room["roomName"],
                 "topic": room["topic"],
                 "difficulty": room["difficulty"],
+                "isPYQMode": room["isPYQMode"],
+                "pyqExamType": room["pyqExamType"],
                 "memberCount": 1
             }, room="battle_lobby")
 
@@ -205,7 +209,8 @@ def register_battle_events(sio):
 
         questions = await generate_battle_questions(
             room["topic"], room["examTarget"],
-            room["difficulty"], room["questionCount"]
+            room["difficulty"], room["questionCount"],
+            room.get("isPYQMode", False), room.get("pyqExamType", "JEE Mains")
         )
 
         if not questions:
@@ -532,6 +537,8 @@ async def end_battle(sio, db, room_id: str):
         "topic": room.get("topic"),
         "difficulty": room.get("difficulty"),
         "examTarget": room.get("examTarget"),
+        "isPYQMode": room.get("isPYQMode", False),
+        "pyqExamType": room.get("pyqExamType", "JEE Mains"),
         "leaderboard": leaderboard,
         "questions": room.get("questions", []),
         "memberAnswers": member_answers,
@@ -601,11 +608,15 @@ def build_leaderboard(members: list) -> list:
 
 
 async def generate_battle_questions(
-    topic: str, exam_target: str, difficulty: str, count: int
+    topic: str, exam_target: str, difficulty: str, count: int,
+    is_pyq_mode: bool = False, pyq_exam_type: str = "JEE Mains"
 ) -> list:
     """
     Generate battle questions using same pipeline as quiz for speed/stability.
     """
+    if is_pyq_mode:
+        return await generate_pyq_questions(topic, pyq_exam_type, difficulty, count)
+
     results = vector_store.query(
         query_text=f"{topic} {exam_target} questions",
         top_k=8

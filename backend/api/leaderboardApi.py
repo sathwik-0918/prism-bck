@@ -3,8 +3,15 @@
 # Score = quiz performance + chat usage + concepts + study planner + tutorials + behavior
 # Refreshes weekly/monthly scores on schedule
 
+from database.mongodb import get_db, get_cloud_db
+
+# In ALL leaderboard functions, use get_cloud_db() for:
+# - db.leaderboard collection
+# - db.studychat_users collection (for profile display)
+# Keep get_db() for local data like personalization
+
 from fastapi import APIRouter
-from database.mongodb import get_db
+# from database.mongodb import get_db
 from datetime import datetime, timedelta
 from typing import List
 
@@ -139,31 +146,28 @@ async def calculate_user_score(userId: str, db, since: str = None) -> dict:
 
 
 async def update_leaderboard_points(userId: str, action: str, value: int, db):
-    """
-    Called from various APIs to update leaderboard in real-time.
-    Increments points based on action type.
-    """
+    """Updates points in CLOUD leaderboard."""
+    db_cloud = get_cloud_db()
+
     points_map = {
-        "quiz": min(value * 0.5 + 10, 60),    # quiz score -> points
+        "quiz": min(value * 0.5 + 10, 60),
         "chat": 2,
         "concept": 5,
         "tutorial": 3,
         "planner": 20,
+        "battle": min(value * 0.6 + 15, 75),
     }
-    
+
     if action == "conceptQuestion":
         points = value
     else:
         points = int(points_map.get(action, 0))
-        
+
     # even if points is 0, we still want to upsert to ensure the user exists in the DB
 
     now = datetime.utcnow().isoformat()
-    week_start = get_week_start()
-    month_start = get_month_start()
-    year_start = get_year_start()
 
-    await db.leaderboard.update_one(
+    await db_cloud.leaderboard.update_one(
         {"userId": userId},
         {
             "$inc": {
@@ -181,11 +185,9 @@ async def update_leaderboard_points(userId: str, action: str, value: int, db):
 
 @leaderboardRouter.get("/leaderboard/{period}")
 async def getLeaderboard(period: str, examTarget: str = ""):
-    """
-    Returns leaderboard for a given period.
-    period: all-time | weekly | monthly | yearly
-    """
-    db = get_db()
+    """Gets leaderboard from CLOUD so all users see each other."""
+    db_cloud = get_cloud_db()
+    db_local = get_db()
 
     score_field = {
         "all-time": "allTimeScore",
@@ -194,19 +196,16 @@ async def getLeaderboard(period: str, examTarget: str = ""):
         "yearly": "yearlyScore"
     }.get(period, "allTimeScore")
 
-    # get top 50 users
-    cursor = db.leaderboard.find({}, {"_id": 0}).sort(score_field, -1).limit(50)
-    entries = await cursor.to_list(length=50)
+    cursor = db_cloud.leaderboard.find({}, {"_id": 0}).sort(score_field, -1).limit(100)
+    entries = await cursor.to_list(length=100)
 
-    # enrich with user data
     enriched = []
     for i, entry in enumerate(entries):
-        user = await db.users.find_one(  # ← stored in users collection
+        user = await db_local.users.find_one(
             {"userId": entry["userId"]},
             {"_id": 0, "firstName": 1, "lastName": 1, "profileImageUrl": 1,
              "examTarget": 1, "email": 1}
         )
-        # also check users.json via helpers
         if not user:
             from helpers.userHelper import findUserById
             user = findUserById(entry.get("userId", ""))
@@ -214,10 +213,10 @@ async def getLeaderboard(period: str, examTarget: str = ""):
         enriched.append({
             "rank": i + 1,
             "userId": entry["userId"],
-            "firstName": user.get("firstName", "User") if user else "User",
+            "firstName": (entry.get("firstName") or (user.get("firstName", "User") if user else "User")),
             "lastName": user.get("lastName", "") if user else "",
-            "profileImageUrl": user.get("profileImageUrl", "") if user else "",
-            "examTarget": user.get("examTarget", "") if user else "",
+            "profileImageUrl": (entry.get("profileImageUrl") or (user.get("profileImageUrl", "") if user else "")),
+            "examTarget": (entry.get("examTarget") or (user.get("examTarget", "") if user else "")),
             "score": entry.get(score_field, 0),
             "allTimeScore": entry.get("allTimeScore", 0),
             "lastActive": entry.get("lastActive", ""),
@@ -228,13 +227,22 @@ async def getLeaderboard(period: str, examTarget: str = ""):
 
 
 @leaderboardRouter.post("/leaderboard/add-user/{userId}")
-async def addToLeaderboard(userId: str):
-    """Adds user to leaderboard on first login."""
-    db = get_db()
-    existing = await db.leaderboard.find_one({"userId": userId})
+async def addToLeaderboard(userId: str, firstName: str = "", profileImageUrl: str = "", examTarget: str = ""):
+    """
+    Adds user to cloud leaderboard on first login.
+    This makes all users visible to each other for friend discovery.
+    """
+    db_local = get_db()
+    db_cloud = get_cloud_db()
+
+    # store in cloud leaderboard
+    existing = await db_cloud.leaderboard.find_one({"userId": userId})
     if not existing:
-        await db.leaderboard.insert_one({
+        await db_cloud.leaderboard.insert_one({
             "userId": userId,
+            "firstName": firstName,
+            "profileImageUrl": profileImageUrl,
+            "examTarget": examTarget,
             "allTimeScore": 0,
             "weeklyScore": 0,
             "monthlyScore": 0,
@@ -242,23 +250,35 @@ async def addToLeaderboard(userId: str):
             "joinedAt": datetime.utcnow().isoformat(),
             "lastActive": datetime.utcnow().isoformat()
         })
-        print(f"[Leaderboard] Added new user '{userId}'")
+    # also store in cloud chat users for search
+    await db_cloud.studychat_users.update_one(
+        {"userId": userId},
+        {"$set": {
+            "userId": userId,
+            "displayName": firstName,
+            "profileImageUrl": profileImageUrl,
+            "examTarget": examTarget,
+            "updatedAt": datetime.utcnow().isoformat()
+        }},
+        upsert=True
+    )
+
     return {"message": "ok"}
 
 
 @leaderboardRouter.get("/leaderboard/user/{userId}")
 async def getUserRank(userId: str):
     """Gets a specific user's rank and score across all periods."""
-    db = get_db()
-    entry = await db.leaderboard.find_one({"userId": userId}, {"_id": 0})
+    db_cloud = get_cloud_db()
+    entry = await db_cloud.leaderboard.find_one({"userId": userId}, {"_id": 0})
     if not entry:
         return {"message": "not found", "payload": None}
 
     # calculate ranks
-    all_time_rank = await db.leaderboard.count_documents(
+    all_time_rank = await db_cloud.leaderboard.count_documents(
         {"allTimeScore": {"$gt": entry.get("allTimeScore", 0)}}
     ) + 1
-    weekly_rank = await db.leaderboard.count_documents(
+    weekly_rank = await db_cloud.leaderboard.count_documents(
         {"weeklyScore": {"$gt": entry.get("weeklyScore", 0)}}
     ) + 1
 

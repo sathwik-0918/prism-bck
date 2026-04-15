@@ -4,6 +4,7 @@
 # uses Ollama LLM to create MCQ questions
 
 import re
+import json
 from typing import List
 from datetime import datetime
 from fastapi import APIRouter
@@ -35,6 +36,8 @@ class QuizResultRequest(BaseModel):
     weakAreas: List[str] = []
     questions: List[dict] = []      # ← full questions saved
     userAnswers: dict = {} 
+    isPYQMode: bool = False          # ← new
+    pyqExamType: str = "JEE Mains"   # JEE Mains | JEE Advanced | NEET
 
 
 
@@ -65,20 +68,94 @@ class QuizRequest(BaseModel):
     difficulty: str = "medium"  # easy / medium / hard
     numQuestions: int = 5
     questionType: str = "mcq"
+    isPYQMode: bool = False
+    pyqExamType: str = "JEE Mains"
+
+# PYQ source file patterns
+PYQ_SOURCES = {
+    "JEE Mains": ["2013pyq", "2014pyq", "2015pyq", "2016pyq",
+                  "2017pyq", "2018pyq", "2019pyq", "jee main",
+                  "mains", "que_17333"],
+    "JEE Advanced": ["jee advanced", "iit jee", "advanced", "jee adv",
+                     "JEE_ADVANCED", "JEE ADVANCED"],
+    "NEET": ["neet", "biology", "neet pyq", "neet 20"]
+}
 
 
-
-@quizRouter.post("/quiz")
-async def generateQuiz(req: QuizRequest):
+async def generate_pyq_questions(
+    topic: str, exam_type: str, difficulty: str, count: int
+) -> list:
     """
-    Generates MCQ quiz from RAG knowledge base.
-    Retrieves relevant content then asks LLM to create questions.
+    Generates questions using ONLY PYQ datasets.
+    Filters vector store results to PYQ sources.
     """
-    print(f"[API: quiz] Generating {req.numQuestions} {req.difficulty} questions on '{req.topic}'")
+    # search specifically in PYQ data
+    search_query = f"{exam_type} {topic} previous year question"
+    results = vector_store.query(query_text=search_query, top_k=12)
 
-    # retrieve relevant content for topic
+    # filter to PYQ sources only
+    pyq_keywords = PYQ_SOURCES.get(exam_type, [])
+    pyq_results = []
+    for r in results:
+        source = r.get("metadata", {}).get("source", "").lower()
+        if any(kw.lower() in source for kw in pyq_keywords):
+            pyq_results.append(r)
+
+    # if not enough PYQ-specific results, use all results
+    context_results = pyq_results if len(pyq_results) >= 3 else results
+    context = "\n\n".join([
+        r["metadata"].get("text", "") for r in context_results[:8] if r["metadata"]
+    ])[:3500]
+
+    system_prompt = f"""You are an expert {exam_type} question compiler.
+Generate exactly {count} authentic PYQ-style MCQ questions on '{topic}'.
+These should be from or inspired by actual {exam_type} previous year papers.
+Difficulty: {difficulty}
+
+IMPORTANT:
+- Questions must be exam-accurate
+- Include year if you know it (e.g., "[JEE Mains 2019]")
+- No LaTeX backslashes in JSON values
+- Include detailed explanations with concepts used
+
+Return ONLY valid JSON array:
+[
+  {{
+    "question": "question text [Year if known]",
+    "options": {{"A": "option", "B": "option", "C": "option", "D": "option"}},
+    "answer": "A",
+    "explanation": "step-by-step solution with concept used",
+    "year": "2019",
+    "source": "{exam_type}"
+  }}
+]"""
+
+    try:
+        response = quiz_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Topic: {topic}\nPYQ Context:\n{context}")
+        ])
+        text = response.content.strip()
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', text)
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())[:count]
+    except Exception as e:
+        print(f"[Quiz] PYQ generation error: {e}")
+
+    return []
+
+
+async def generate_regular_questions(
+    topic: str, exam_target: str, difficulty: str, count: int, question_type: str
+) -> list:
+    """
+    Generates regular quiz questions from the main RAG knowledge base.
+    """
     results = vector_store.query(
-        query_text=f"{req.topic} {req.examTarget} questions",
+        query_text=f"{topic} {exam_target} {question_type} questions",
         top_k=8
     )
 
@@ -89,12 +166,11 @@ async def generateQuiz(req: QuizRequest):
     ])
 
     if not context:
-        return {"message": "no content found", "payload": []}
+        return []
 
-    # strict format prompt — forces consistent output
-    system_prompt = f"""You are an expert {req.examTarget} question setter.
-Generate exactly {req.numQuestions} multiple choice questions on '{req.topic}'.
-Difficulty level: {req.difficulty}
+    system_prompt = f"""You are an expert {exam_target} question setter.
+Generate exactly {count} {question_type} questions on '{topic}'.
+Difficulty level: {difficulty}
 
 You MUST format EVERY question EXACTLY like this (no bold, no markdown, no numbering):
 
@@ -117,26 +193,49 @@ Rules:
 
     response = quiz_llm.invoke([
         SystemMessage(content=system_prompt),
-        HumanMessage(content=f"Context:\n{context[:3000]}\n\nGenerate {req.numQuestions} {req.difficulty} MCQ questions on '{req.topic}' now.")
+        HumanMessage(
+            content=f"Context:\n{context[:3000]}\n\nGenerate {count} {difficulty} {question_type} questions on '{topic}' now."
+        )
     ])
 
     raw_text = response.content
     print(f"[API: quiz] Raw LLM output ({len(raw_text)} chars):\n{raw_text[:600]}...")
 
-    # parse response into structured format
     questions = parse_quiz_response(raw_text)
 
-    # if strict parser fails, try flexible parser
     if not questions:
         print("[API: quiz] Strict parser returned 0, trying flexible parser...")
         questions = parse_quiz_flexible(raw_text)
 
-    # if flexible parser fails, try JSON fallback
     if not questions:
         print("[API: quiz] Flexible parser returned 0, trying JSON fallback...")
         questions = parse_quiz_json_fallback(raw_text)
 
     print(f"[API: quiz] Generated {len(questions)} questions.")
+    return questions
+
+@quizRouter.post("/quiz")
+async def generateQuiz(req: QuizRequest):
+    """
+    Generates MCQ quiz from RAG knowledge base.
+    Retrieves relevant content then asks LLM to create questions.
+    Generates quiz — regular or PYQ mode.
+    """
+    print(f"[API: quiz] Generating {req.numQuestions} {req.difficulty} questions on '{req.topic}'"
+          f"{' [PYQ MODE: ' + req.pyqExamType + ']' if req.isPYQMode else ''}")
+
+    if req.isPYQMode:
+        questions = await generate_pyq_questions(
+            req.topic, req.pyqExamType, req.difficulty, req.numQuestions
+        )
+    else:
+        questions = await generate_regular_questions(
+            req.topic, req.examTarget, req.difficulty, req.numQuestions, req.questionType
+        )
+
+    if not questions:
+        return {"message": "no questions generated", "payload": []}
+
     return {"message": "quiz generated", "payload": questions}
 
 
