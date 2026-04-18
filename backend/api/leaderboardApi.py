@@ -187,7 +187,6 @@ async def update_leaderboard_points(userId: str, action: str, value: int, db):
 async def getLeaderboard(period: str, examTarget: str = ""):
     """Gets leaderboard from CLOUD so all users see each other."""
     db_cloud = get_cloud_db()
-    db_local = get_db()
 
     score_field = {
         "all-time": "allTimeScore",
@@ -198,25 +197,30 @@ async def getLeaderboard(period: str, examTarget: str = ""):
 
     cursor = db_cloud.leaderboard.find({}, {"_id": 0}).sort(score_field, -1).limit(100)
     entries = await cursor.to_list(length=100)
+    user_ids = [entry.get("userId") for entry in entries if entry.get("userId")]
+    cloud_profiles = await db_cloud.studychat_users.find(
+        {"userId": {"$in": user_ids}},
+        {"_id": 0, "userId": 1, "displayName": 1, "firstName": 1, "profileImageUrl": 1, "examTarget": 1}
+    ).to_list(length=len(user_ids))
+    profiles_by_id = {p.get("userId"): p for p in cloud_profiles}
 
     enriched = []
     for i, entry in enumerate(entries):
-        user = await db_local.users.find_one(
-            {"userId": entry["userId"]},
-            {"_id": 0, "firstName": 1, "lastName": 1, "profileImageUrl": 1,
-             "examTarget": 1, "email": 1}
+        profile = profiles_by_id.get(entry.get("userId"), {})
+        display_name = (
+            entry.get("firstName") or
+            profile.get("displayName") or
+            profile.get("firstName") or
+            "User"
         )
-        if not user:
-            from helpers.userHelper import findUserById
-            user = findUserById(entry.get("userId", ""))
 
         enriched.append({
             "rank": i + 1,
             "userId": entry["userId"],
-            "firstName": (entry.get("firstName") or (user.get("firstName", "User") if user else "User")),
-            "lastName": user.get("lastName", "") if user else "",
-            "profileImageUrl": (entry.get("profileImageUrl") or (user.get("profileImageUrl", "") if user else "")),
-            "examTarget": (entry.get("examTarget") or (user.get("examTarget", "") if user else "")),
+            "firstName": display_name,
+            "lastName": "",
+            "profileImageUrl": entry.get("profileImageUrl") or profile.get("profileImageUrl", ""),
+            "examTarget": entry.get("examTarget") or profile.get("examTarget", ""),
             "score": entry.get(score_field, 0),
             "allTimeScore": entry.get("allTimeScore", 0),
             "lastActive": entry.get("lastActive", ""),
@@ -232,33 +236,41 @@ async def addToLeaderboard(userId: str, firstName: str = "", profileImageUrl: st
     Adds user to cloud leaderboard on first login.
     This makes all users visible to each other for friend discovery.
     """
-    db_local = get_db()
     db_cloud = get_cloud_db()
+    now_iso = datetime.utcnow().isoformat()
 
     # store in cloud leaderboard
-    existing = await db_cloud.leaderboard.find_one({"userId": userId})
-    if not existing:
-        await db_cloud.leaderboard.insert_one({
-            "userId": userId,
-            "firstName": firstName,
-            "profileImageUrl": profileImageUrl,
-            "examTarget": examTarget,
-            "allTimeScore": 0,
-            "weeklyScore": 0,
-            "monthlyScore": 0,
-            "yearlyScore": 0,
-            "joinedAt": datetime.utcnow().isoformat(),
-            "lastActive": datetime.utcnow().isoformat()
-        })
+    await db_cloud.leaderboard.update_one(
+        {"userId": userId},
+        {
+            "$set": {
+                "userId": userId,
+                "firstName": firstName,
+                "profileImageUrl": profileImageUrl,
+                "examTarget": examTarget,
+                "lastActive": now_iso
+            },
+            "$setOnInsert": {
+                "allTimeScore": 0,
+                "weeklyScore": 0,
+                "monthlyScore": 0,
+                "yearlyScore": 0,
+                "joinedAt": now_iso
+            }
+        },
+        upsert=True
+    )
+
     # also store in cloud chat users for search
     await db_cloud.studychat_users.update_one(
         {"userId": userId},
         {"$set": {
             "userId": userId,
             "displayName": firstName,
+            "firstName": firstName,
             "profileImageUrl": profileImageUrl,
             "examTarget": examTarget,
-            "updatedAt": datetime.utcnow().isoformat()
+            "updatedAt": now_iso
         }},
         upsert=True
     )

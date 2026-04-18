@@ -6,7 +6,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-from database.mongodb import get_db
+from database.mongodb import get_db, get_cloud_db
 from rag.nodes import main_llm, vector_store
 from langchain_core.messages import SystemMessage, HumanMessage
 from datetime import datetime, timedelta
@@ -17,6 +17,11 @@ battleRouter = APIRouter()
 
 def now():
     return datetime.utcnow().isoformat() + "Z"
+
+
+def get_battle_db():
+    """Cloud DB for battle rooms/history so rooms are visible across devices."""
+    return get_cloud_db()
 
 
 # ── BATTLE SOCKET EVENTS (added to studyChatApi.py sio) ──────────────────
@@ -40,8 +45,7 @@ def register_battle_events(sio):
         if not user_id:
             return
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
 
         room_id = str(uuid.uuid4())[:8].upper()  # short code like "ABC12345"
         invite_code = data.get("inviteCode") or str(uuid.uuid4())[:6].upper()
@@ -114,8 +118,7 @@ def register_battle_events(sio):
         if not user_id:
             return
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
 
         # find room
         query = {}
@@ -175,8 +178,7 @@ def register_battle_events(sio):
         if not user_id or not room_id:
             return
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
 
         room = await db.battle_rooms.find_one({"roomId": room_id})
         if not room or room["hostId"] != user_id:
@@ -293,8 +295,7 @@ def register_battle_events(sio):
         if not user_id or not room_id:
             return
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
 
         room = await db.battle_rooms.find_one({"roomId": room_id})
         if not room or room["status"] != "active":
@@ -374,8 +375,7 @@ def register_battle_events(sio):
         if not user_id or not room_id:
             return
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
         room = await db.battle_rooms.find_one({"roomId": room_id})
         if not room or room.get("hostId") != user_id or room.get("status") != "active":
             return
@@ -388,8 +388,7 @@ def register_battle_events(sio):
         """Join public lobby to see available rooms."""
         await sio.enter_room(sid, "battle_lobby")
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
 
         rooms = await db.battle_rooms.find(
             {"isPrivate": False, "status": "waiting"},
@@ -421,8 +420,7 @@ def register_battle_events(sio):
         if not user_id or not room_id:
             return
 
-        from database.mongodb import get_db
-        db = get_db()
+        db = get_battle_db()
         room = await db.battle_rooms.find_one({"roomId": room_id})
         if not room:
             await sio.emit("battle_error", {"message": "Room not found"}, to=sid)
@@ -554,14 +552,15 @@ async def end_battle(sio, db, room_id: str):
         {"$set": {"status": "finished"}}
     )
 
-    # update personalization for each member
+    # update personalization locally; battle rooms/history stay in cloud.
+    local_db = get_db()
     for member in members:
         user_answers = member.get("answers", {})
         questions = room.get("questions", [])
         correct = sum(1 for ans in user_answers.values() if ans.get("correct"))
         total = len(questions)
 
-        await db.personalization.update_one(
+        await local_db.personalization.update_one(
             {"userId": member["userId"]},
             {
                 "$inc": {
@@ -728,7 +727,7 @@ def parse_battle_questions_flexible(text: str) -> list:
 @battleRouter.get("/battle/rooms/public")
 async def getPublicRooms():
     """Get all waiting public rooms."""
-    db = get_db()
+    db = get_battle_db()
     rooms = await db.battle_rooms.find(
         {"isPrivate": False, "status": "waiting"},
         {"_id": 0, "questions": 0}
@@ -739,7 +738,7 @@ async def getPublicRooms():
 @battleRouter.get("/battle/room/{roomId}")
 async def getRoom(roomId: str):
     """Get room details."""
-    db = get_db()
+    db = get_battle_db()
     room = await db.battle_rooms.find_one(
         {"roomId": roomId}, {"_id": 0, "questions": 0}
     )
@@ -749,7 +748,7 @@ async def getRoom(roomId: str):
 @battleRouter.get("/battle/history/{userId}")
 async def getBattleHistory(userId: str):
     """Get battle history for sidebar."""
-    db = get_db()
+    db = get_battle_db()
     history = await db.battle_history.find(
         {"memberIds": userId},
         {"_id": 0, "questions": 0}
@@ -766,7 +765,7 @@ async def getBattleHistory(userId: str):
 @battleRouter.get("/battle/history/{userId}/{resultId}")
 async def getBattleHistoryDetail(userId: str, resultId: str):
     """Get one battle with full question + per-user answers for review."""
-    db = get_db()
+    db = get_battle_db()
     result = await db.battle_history.find_one(
         {"resultId": resultId, "memberIds": userId},
         {"_id": 0}
@@ -779,7 +778,7 @@ async def getBattleHistoryDetail(userId: str, resultId: str):
 @battleRouter.get("/battle/leaderboard")
 async def getBattleLeaderboard():
     """Get all-time battle leaderboard."""
-    db = get_db()
+    db = get_battle_db()
 
     pipeline = [
         {"$unwind": "$leaderboard"},
