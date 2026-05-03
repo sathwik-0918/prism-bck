@@ -1,10 +1,40 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
+*.pyc
+*.pyo
+*.pyd
+
+# Build
 build/
 dist/
-wheels/
 *.egg-info
+wheels/
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# RAG / Data (IMPORTANT)
+data/
+*.pdf
+
+# Vector store / embeddings
+faiss_store/
+embeddings/
+*.faiss
+*.pkl
+*.index
+
+# Logs
+*.log
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
